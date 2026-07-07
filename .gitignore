@@ -216,4 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# gitignore has no trailing comments — pattern must stand alone
 docs/
+
+# tawn runtime state — never in git (PRD §8)
+config.yaml
+grants.yaml
+grants.yaml.sha256
+*.egg-info/
+.venv/

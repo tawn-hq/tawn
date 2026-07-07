@@ -1,0 +1,19 @@
+<svg viewBox="0 0 636 216" xmlns="http://www.w3.org/2000/svg">
+  <!-- Tawn wordmark · light grounds
+       Custom-drawn geometric monoline (no font dependency); round terminals
+       echo the cairn stones. The final n — the letter that makes it *own* —
+       takes lapis. Minimum height 24px. Don't retype in a font. -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="36">
+    <g stroke="#33291C">
+      <path d="M54 26 L54 150 Q54 190 90 190"/>
+      <path d="M18 72 L108 72"/>
+      <circle cx="217" cy="125" r="47"/>
+      <path d="M272 60 L272 190"/>
+      <path d="M334 60 L366 190 L398 84 L430 190 L462 60"/>
+    </g>
+    <g stroke="#2E5FA3">
+      <path d="M514 190 L514 60"/>
+      <path d="M514 124 C514 62 606 62 606 124 L606 190"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,63 @@
+/* tawn design tokens — v2 · Sandstone & Lapis
+ * Identity: CAIRN mark (three stones, lapis capstone).
+ * Palette story: humanity's first permanent records — marks on sandstone,
+ * written in lapis, the pigment once worth more than gold.
+ * One token file, three surfaces: web viewer CSS reads it directly; the
+ * Rich/Textual CLI theme and Telegram asset generation map the same names.
+ */
+:root {
+  /* ground — warm mineral neutrals */
+  --tawn-bg: #FAF7F1;         /* sandstone — page ground */
+  --tawn-surface: #FFFFFF;
+  --tawn-raised: #F3EEE3;     /* raised surface */
+  --tawn-line: #E7E0D2;       /* borders, rules */
+  --tawn-line-strong: #D5CCB8;
+
+  /* ink */
+  --tawn-text: #33291C;       /* ink — text, mark stones */
+  --tawn-text-2: #6B5F4B;     /* secondary text */
+  --tawn-text-3: #948A76;
+
+  /* accent — lapis. Scarce by rule: the capstone, the focused entity,
+     the prompt, the primary action. Never a status color. */
+  --tawn-lapis-soft: #E5ECF6; /* tint, highlights, row hover */
+  --tawn-lapis-bright: #4A7BC8; /* capstone + accent on dark grounds */
+  --tawn-lapis: #2E5FA3;      /* accent + accent text on light (AA) */
+  --tawn-lapis-deep: #234A80; /* hover / active on light */
+
+  /* domains — tag, never flood. Chips, graph-node colors, 12% tints.
+     Lapis stays pure accent, so work wears kiln clay instead of blue. */
+  --tawn-work: #9C5B33;       /* kiln — clay, the maker's domain */
+  --tawn-wealth: #3F8E62;     /* jade — read-only money */
+  --tawn-research: #8A63D2;   /* violet */
+  --tawn-academic: #C2536B;   /* madder */
+
+  /* semantic — status only. warn is the staleness contract:
+     every fact past TTL renders with it. */
+  --tawn-good: #3F8E62;       /* fresh, local, passing */
+  --tawn-warn: #B9741F;       /* stale facts, parked ops */
+  --tawn-crit: #BF4040;       /* failures, gate refusals */
+  --tawn-info: #2E5FA3;       /* notices (shares lapis) */
+
+  /* type */
+  --tawn-font-display: "General Sans", "Segoe UI Variable Display", system-ui, sans-serif;
+  --tawn-font-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --tawn-font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* sandstone night */
+    --tawn-bg: #191510;
+    --tawn-surface: #221C14;
+    --tawn-raised: #2B241A;
+    --tawn-line: #383021;
+    --tawn-line-strong: #4A4030;
+    --tawn-text: #EFE9DC;      /* bone */
+    --tawn-text-2: #ADA28C;
+    --tawn-text-3: #7A7160;
+    --tawn-lapis: #4A7BC8;     /* bright lapis passes as text on dark */
+    --tawn-lapis-deep: #6E97D6;
+    --tawn-lapis-soft: #1C2536;
+  }
+}
