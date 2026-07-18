@@ -4,6 +4,8 @@
 > A local-first, agent-agnostic context core for one person's work, wealth, research, and academic life. The name is deliberate: **taw** (ת) — *the mark, the bookend, the twin* — the last letter of the Semitic abjad answering aleph's first, and the user's own initial (T); **+ own** — your data, your machine, your intelligence, owned by you. *taw / two / twin*, and now yours.
 >
 > **This file is the canonical instruction surface.** Any agent (Claude Code, Antigravity, Gemini CLI, Cursor, Cline, Codex) that reads `AGENTS.md` should read *this*. It is portable by design: no agent owns it, every agent uses it.
+>
+> **Humans installing Tawn:** see [`INSTALL.md`](INSTALL.md).
 
 ---
 
