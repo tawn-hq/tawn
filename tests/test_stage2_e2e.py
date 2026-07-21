@@ -8,7 +8,7 @@ import tawn.model.router as router_mod
 from tawn.cli import app
 from tawn.model.ledger import Ledger
 from tawn.model.providers.ollama import OllamaProvider
-from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse
+from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse, StreamChunk
 
 runner = CliRunner()
 
@@ -25,6 +25,10 @@ class ScriptedProvider:
             text=self.text, model=self.model, provider=self.name,
             tokens_in=7, tokens_out=4,
         )
+
+    def stream_complete(self, msgs, model=None):
+        yield StreamChunk(text=self.text)
+        yield StreamChunk(text="", done=True, tokens_in=7, tokens_out=4)
 
     def count_tokens(self, msgs):
         return 1
@@ -60,10 +64,35 @@ def test_ask_sensitive_never_uses_cloud(tawn_home, monkeypatch):
     assert e["locality"] == "local" and e["sensitive"] is True
 
 
+def test_ask_streams_and_includes_baseline(tawn_home, monkeypatch):
+    tawn_home.mkdir(parents=True, exist_ok=True)
+    seen_msgs = []
+
+    class StreamingScriptedProvider(ScriptedProvider):
+        def stream_complete(self, msgs, model=None):
+            seen_msgs.append(msgs)
+            yield StreamChunk(text=self.text)
+            yield StreamChunk(text="", done=True, tokens_in=3, tokens_out=2)
+
+    local = StreamingScriptedProvider("ollama", "local")
+    monkeypatch.setattr(
+        router_mod, "default_router",
+        lambda home: router_mod.Router([local], Ledger(home / "ledger.jsonl")),
+    )
+    result = runner.invoke(app, ["ask", "hi"])
+    assert result.exit_code == 0
+    assert "hello from the twin" in result.output
+    assert seen_msgs[0][0].role == "system"  # baseline prepended
+
+
 def test_ask_all_down_exits_nonzero(tawn_home, monkeypatch):
     class DownProvider(ScriptedProvider):
         def complete(self, msgs, model=None):
             raise ModelError("down", kind=ErrorKind.SERVER_ERROR, provider=self.name)
+
+        def stream_complete(self, msgs, model=None):
+            raise ModelError("down", kind=ErrorKind.SERVER_ERROR, provider=self.name)
+            yield  # pragma: no cover — unreachable, keeps this a generator
 
     monkeypatch.setattr(
         router_mod, "default_router",
@@ -125,23 +154,32 @@ def _echo_router(home):
                 model=self.model, provider=self.name, tokens_in=1, tokens_out=1,
             )
 
+        def stream_complete(self, msgs, model=None):
+            text = f"echo: {msgs[-1].content} (history {len(msgs)})"
+            yield StreamChunk(text=text)
+            yield StreamChunk(text="", done=True, tokens_in=1, tokens_out=1)
+
     return Router([Echo("ollama", "local")], Ledger(home / "ledger.jsonl"))
 
 
 def test_chat_carries_history_and_exits(tawn_home, monkeypatch):
     monkeypatch.setattr(router_mod, "default_router", _echo_router)
+    monkeypatch.setattr("tawn.model.personality.profile_is_empty", lambda home: False)
     result = runner.invoke(app, ["chat"], input="hi\nagain\nexit\n")
     assert result.exit_code == 0
-    assert "echo: hi (history 1)" in result.output
-    # second turn carries user+assistant+user = 3 messages
-    assert "echo: again (history 3)" in result.output
+    # baseline system msg prepended → system+user = 2 on first turn
+    assert "echo: hi (history 2)" in result.output
+    # second turn: system+user+assistant+user = 4
+    assert "echo: again (history 4)" in result.output
 
 
 def test_chat_clear_resets_history(tawn_home, monkeypatch):
     monkeypatch.setattr(router_mod, "default_router", _echo_router)
+    monkeypatch.setattr("tawn.model.personality.profile_is_empty", lambda home: False)
     result = runner.invoke(app, ["chat"], input="hi\n/new\nfresh\nexit\n")
     assert "history cleared" in result.output
-    assert "echo: fresh (history 1)" in result.output
+    # after /new, fresh start: system+user = 2
+    assert "echo: fresh (history 2)" in result.output
 
 
 def test_model_setup_pick_by_number_writes_config(tawn_home, monkeypatch):
@@ -209,6 +247,7 @@ def test_model_use_picker_auto(tawn_home, monkeypatch):
 
 def test_chat_model_command_switches(tawn_home, monkeypatch):
     monkeypatch.setattr(router_mod, "default_router", _echo_router)
+    monkeypatch.setattr("tawn.model.personality.profile_is_empty", lambda home: False)
     result = runner.invoke(
         app, ["chat"], input="/model gemma3:4b\nhi\nexit\n"
     )

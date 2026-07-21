@@ -1,0 +1,71 @@
+:root {
+  /* Sandstone palette (light) */
+  --bg: #FAF7F1;
+  --bg-raised: #F3EDE3;
+  --text: #33291C;
+  --text-muted: #6B5F4B;
+  --border: #E7E0D2;
+
+  /* Lapis accent */
+  --lapis: #2E5FA3;
+  --lapis-dim: #4A7BC8;
+
+  /* Amber (cairn mark / highlight) */
+  --amber: #C87A2E;
+  --amber-dim: #E09448;
+
+  /* Semantic */
+  --error: #B33A2E;
+  --success: #2E7A4A;
+
+  /* Type scale */
+  --font: system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', monospace;
+  --sz-sm: 13px;
+  --sz-base: 15px;
+  --sz-lg: 18px;
+  --sz-xl: 24px;
+
+  /* Spacing */
+  --r: 8px;
+  --r-sm: 4px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #191510;
+    --bg-raised: #221D16;
+    --text: #EFE9DC;
+    --text-muted: #ADA28C;
+    --border: #383021;
+    --lapis: #4A7BC8;
+    --lapis-dim: #2E5FA3;
+    --amber: #E09448;
+    --amber-dim: #C87A2E;
+    --error: #E05A4A;
+    --success: #4ABA6A;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: var(--sz-base) / 1.55 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--lapis);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}

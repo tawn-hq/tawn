@@ -5,9 +5,11 @@ injected for tests; the API key is redacted from every error message
 (governance §8: secrets never in logs).
 """
 
+from collections.abc import Iterator
+
 import anthropic as anthropic_sdk
 
-from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse
+from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse, StreamChunk
 
 
 class AnthropicProvider:
@@ -63,6 +65,36 @@ class AnthropicProvider:
             tokens_in=getattr(usage, "input_tokens", 0) or 0,
             tokens_out=getattr(usage, "output_tokens", 0) or 0,
         )
+
+    def stream_complete(self, msgs: list[Message], model: str | None = None) -> Iterator[StreamChunk]:
+        model = model or self.model
+        system, messages = self._split(msgs)
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": 16000,
+            "thinking": {"type": "adaptive"},
+            "messages": messages,
+        }
+        if system is not None:
+            kwargs["system"] = system
+        try:
+            with self._client.messages.stream(**kwargs) as stream:
+                for text in stream.text_stream:
+                    yield StreamChunk(text=text)
+                final = stream.get_final_message()
+                usage = getattr(final, "usage", None)
+                yield StreamChunk(
+                    text="",
+                    done=True,
+                    tokens_in=getattr(usage, "input_tokens", 0) or 0,
+                    tokens_out=getattr(usage, "output_tokens", 0) or 0,
+                )
+        except Exception as exc:
+            raise ModelError(
+                self._redact(f"anthropic: {exc}"),
+                kind=self.classify_error(exc),
+                provider=self.name,
+            ) from exc
 
     def _redact(self, text: str) -> str:
         return text.replace(self._api_key, "***")

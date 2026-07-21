@@ -3,7 +3,7 @@ import pytest
 from tawn.model.breaker import CircuitBreaker
 from tawn.model.ledger import Ledger
 from tawn.model.router import Router, default_router
-from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse
+from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse, StreamChunk
 
 MSGS = [Message(role="user", content="hello")]
 
@@ -12,6 +12,7 @@ class FakeProvider:
     def __init__(self, name, locality, results=None):
         self.name = name
         self.locality = locality
+        self.model = f"{name}-model"
         # each item: ModelResponse to return or ModelError to raise
         self.results = list(results or [])
         self.calls = 0
@@ -135,7 +136,8 @@ def test_default_router_enables_every_keyed_provider_in_order(tmp_path, monkeypa
     monkeypatch.setattr(router_mod, "get_key", lambda provider: "sk-test")
     router = default_router(tmp_path)
     assert [p.name for p in router.providers] == [
-        "anthropic", "openai", "gemini", "deepseek", "ollama",
+        "anthropic", "openai", "gemini", "deepseek",
+        "openrouter", "kimi", "qwen", "groq", "grok", "ollama",
     ]
 
 
@@ -166,7 +168,9 @@ def test_preference_moves_provider_first_and_pins_model(tmp_path, monkeypatch):
     assert router.providers[0].name == "deepseek"
     assert router.providers[0].model == "deepseek-reasoner"
     # rest of the chain intact as failover
-    assert [p.name for p in router.providers[1:]] == ["anthropic", "openai", "gemini", "ollama"]
+    assert [p.name for p in router.providers[1:]] == [
+        "anthropic", "openai", "gemini", "openrouter", "kimi", "qwen", "groq", "grok", "ollama"
+    ]
 
 
 def test_preference_bare_local_tag(tmp_path, monkeypatch):
@@ -203,3 +207,54 @@ def test_usable_models_lists_keyed_cloud_and_installed_local(tmp_path, monkeypat
     assert "anthropic/claude-opus-4-8" in targets
     assert "ollama/qwen2.5:3b" in targets
     assert not any(t.startswith("openai/") for t in targets)  # no key, no row
+
+
+def test_stream_yields_chunks_and_ledgers_success(tmp_path):
+    class StreamingFakeProvider(FakeProvider):
+        def stream_complete(self, msgs, model=None):
+            yield StreamChunk(text="hi ")
+            yield StreamChunk(text="there")
+            yield StreamChunk(text="", done=True, tokens_in=5, tokens_out=3)
+
+    p = StreamingFakeProvider("ollama", "local")
+    router = make(tmp_path, p)
+    chunks = list(router.stream(MSGS))
+    text = "".join(c.text for c in chunks if not c.done)
+    assert text == "hi there"
+    assert chunks[-1].done and chunks[-1].tokens_in == 5
+    (e,) = Ledger(tmp_path / "ledger.jsonl").entries()
+    assert e["ok"] is True and e["tokens_in"] == 5
+
+
+def test_stream_fails_over_before_first_chunk(tmp_path):
+    class FailFirstProvider(FakeProvider):
+        def stream_complete(self, msgs, model=None):
+            raise err(self.name, ErrorKind.SERVER_ERROR)
+            yield  # pragma: no cover — unreachable, keeps this a generator
+
+    class OkProvider(FakeProvider):
+        def stream_complete(self, msgs, model=None):
+            yield StreamChunk(text="ok")
+            yield StreamChunk(text="", done=True, tokens_in=1, tokens_out=1)
+
+    cloud = FailFirstProvider("gemini", "cloud")
+    local = OkProvider("ollama", "local")
+    router = make(tmp_path, cloud, local)
+    chunks = list(router.stream(MSGS))
+    text = "".join(c.text for c in chunks if not c.done)
+    assert text == "ok"  # failed over cleanly, no partial gemini text ever emitted
+
+
+def test_stream_mid_stream_error_stops_without_splicing(tmp_path):
+    class BreaksMidStreamProvider(FakeProvider):
+        def stream_complete(self, msgs, model=None):
+            yield StreamChunk(text="partial ")
+            raise err(self.name, ErrorKind.SERVER_ERROR)
+
+    p = BreaksMidStreamProvider("ollama", "local")
+    router = make(tmp_path, p)
+    chunks = list(router.stream(MSGS))
+    assert "".join(c.text for c in chunks) == "partial "
+    assert chunks[-1].done and chunks[-1].error is not None
+    (e,) = Ledger(tmp_path / "ledger.jsonl").entries()
+    assert e["ok"] is False

@@ -4,12 +4,14 @@ The SDK client is injected for tests; the API key lives only inside it and is
 redacted from every error message (governance §8: secrets never in logs).
 """
 
+from collections.abc import Iterator
+
 import httpx
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
-from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse
+from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse, StreamChunk
 
 
 class GeminiProvider:
@@ -60,6 +62,27 @@ class GeminiProvider:
             tokens_in=getattr(usage, "prompt_token_count", 0) or 0,
             tokens_out=getattr(usage, "candidates_token_count", 0) or 0,
         )
+
+    def stream_complete(self, msgs: list[Message], model: str | None = None) -> Iterator[StreamChunk]:
+        model = model or self.model
+        system, contents = self._split(msgs)
+        config = genai_types.GenerateContentConfig(system_instruction=system)
+        try:
+            tokens_in = tokens_out = 0
+            for chunk in self._client.models.generate_content_stream(model=model, contents=contents, config=config):
+                if chunk.text:
+                    yield StreamChunk(text=chunk.text)
+                usage = getattr(chunk, "usage_metadata", None)
+                if usage is not None:
+                    tokens_in = usage.prompt_token_count or 0
+                    tokens_out = usage.candidates_token_count or 0
+            yield StreamChunk(text="", done=True, tokens_in=tokens_in, tokens_out=tokens_out)
+        except Exception as exc:
+            raise ModelError(
+                self._redact(f"gemini: {exc}"),
+                kind=self.classify_error(exc),
+                provider=self.name,
+            ) from exc
 
     def available_models(self) -> list[dict]:
         """Chat-capable models on this key, [] when unreachable.

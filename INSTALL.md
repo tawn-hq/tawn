@@ -9,6 +9,7 @@ Stage 3+. This doc takes you from clone to a verified working install.
 - Linux (Linux-first per the PRD; anything with Python works for Stage 0)
 - Python **3.12+** — check with `python3 --version`
 - git
+- Node **20+** / npm (for the web viewer's frontend — only needed once, or after pulling changes to `frontend/`)
 
 ## 1 · Install
 
@@ -249,7 +250,7 @@ Tawn enables a cloud provider the moment its key exists. Priority order:
 |---|---|---|
 | Anthropic | `tawn key set anthropic` | claude-opus-4-8 |
 | OpenAI | `tawn key set openai` | gpt-5.1 |
-| Gemini | `tawn key set gemini` | gemini-2.0-flash |
+| Gemini | `tawn key set gemini` | gemini-2.5-flash |
 | DeepSeek | `tawn key set deepseek` | deepseek-chat |
 
 ```bash
@@ -307,6 +308,57 @@ Append-only JSONL at `~/.tawn/ledger.jsonl` — metadata only, never prompt text
 If a provider misbehaves (rate limits, 5xx), the router retries once on rate
 limits, otherwise fails over in priority order; three straight failures open a
 60-second circuit breaker so a dead provider stops eating your time.
+
+## Domains — pluggable data modules
+
+Domains are pluggable modules that let Tawn track things. Five ship built-in:
+`wealth`, `work`, `research`, `academic`, `hobby`. You can enable/disable them
+and create your own.
+
+```bash
+tawn domain list                     # all discovered domains + enabled status
+tawn domain enable wealth            # opt in (deny-all by default)
+tawn domain disable hobby            # opt out
+
+tawn domain create                   # describe what you want in plain English;
+                                     # Tawn drafts the domain module, you confirm
+```
+
+`tawn domain create` uses the router's best available model to generate a
+Python domain module from your description. It opens an editor (or runs a
+field wizard if no model is available) and writes the result to
+`~/.tawn/domains/<name>/domain.py` — you own the code.
+
+## Web viewer
+
+Tawn ships a local-only web UI at `http://127.0.0.1:8787`:
+
+```bash
+tawn web                             # starts the server; ctrl-c to stop
+tawn web --port 9000                 # different port
+```
+
+The web viewer is a React SPA backed by the Tawn API. If you want to build it
+from source (not required — pre-built assets ship in the repo):
+
+```bash
+cd frontend
+npm install
+npm run build                        # outputs to frontend/dist/; FastAPI serves it
+```
+
+In development mode, run `npm run dev` from `frontend/` for hot-reload at port 5173
+while `tawn web` runs the API on 8787 (Vite proxies `/api` automatically).
+
+### Frontend changes after `git pull`
+
+If `git pull` touched anything under `frontend/`, rebuild it:
+
+```bash
+cd frontend && npm ci && npm run build
+```
+
+(Editable/pipx installs skip the `build_py` hook — rebuild manually after frontend changes.)
 
 ## Updating Tawn
 

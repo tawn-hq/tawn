@@ -96,3 +96,31 @@ def test_error_never_leaks_api_key():
         p.complete(MSGS)
     assert "sk-SECRET123" not in str(ei.value)
     assert ei.value.kind is ErrorKind.SERVER_ERROR
+
+
+def test_stream_complete_yields_chunks_then_done():
+    class FakeStream:
+        def __init__(self):
+            self.text_stream = iter(["hi ", "there"])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get_final_message(self):
+            return ok_response(text="hi there", tin=9, tout=4)
+
+    class FakeMessagesStreaming(FakeMessages):
+        def stream(self, **kwargs):
+            self.calls.append(kwargs)
+            return FakeStream()
+
+    client = SimpleNamespace(messages=FakeMessagesStreaming())
+    p = AnthropicProvider(api_key="sk-test", client=client)
+    chunks = list(p.stream_complete(MSGS))
+    text_chunks = [c for c in chunks if not c.done]
+    assert "".join(c.text for c in text_chunks) == "hi there"
+    final = chunks[-1]
+    assert final.done and final.tokens_in == 9 and final.tokens_out == 4

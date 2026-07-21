@@ -97,3 +97,26 @@ def test_error_never_leaks_api_key():
         p.complete(MSGS)
     assert "sk-SECRET123" not in str(ei.value)
     assert ei.value.kind is ErrorKind.SERVER_ERROR
+
+
+def test_stream_complete_yields_chunks_then_done():
+    def make_chunk(delta_text=None, usage=None):
+        delta = SimpleNamespace(content=delta_text)
+        return SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=usage)
+
+    class FakeStreamingCompletions(FakeCompletions):
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return iter([
+                make_chunk(delta_text="hi "),
+                make_chunk(delta_text="there"),
+                make_chunk(delta_text=None, usage=SimpleNamespace(prompt_tokens=9, completion_tokens=4)),
+            ])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeStreamingCompletions()))
+    p = OpenAICompatProvider(name="openai", api_key="sk-test", model="gpt-5.1", client=client)
+    chunks = list(p.stream_complete(MSGS))
+    text_chunks = [c for c in chunks if not c.done]
+    assert "".join(c.text for c in text_chunks) == "hi there"
+    final = chunks[-1]
+    assert final.done and final.tokens_in == 9 and final.tokens_out == 4

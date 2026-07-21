@@ -5,12 +5,12 @@ management: hardware-aware recommendation, installed inventory, and
 streaming pulls, so `tawn model setup` can fit the model to the machine.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import httpx
 import ollama
 
-from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse
+from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse, StreamChunk
 
 GB = 1024**3
 
@@ -70,6 +70,27 @@ class OllamaProvider:
             tokens_in=resp.prompt_eval_count or 0,
             tokens_out=resp.eval_count or 0,
         )
+
+    def stream_complete(self, msgs: list[Message], model: str | None = None) -> Iterator[StreamChunk]:
+        model = model or self.model
+        messages = [{"role": m.role, "content": m.content} for m in msgs]
+        try:
+            for chunk in self._client.chat(model=model, messages=messages, stream=True):
+                if chunk.message is not None and chunk.message.content:
+                    yield StreamChunk(text=chunk.message.content)
+                if chunk.done:
+                    yield StreamChunk(
+                        text="",
+                        done=True,
+                        tokens_in=chunk.prompt_eval_count or 0,
+                        tokens_out=chunk.eval_count or 0,
+                    )
+        except Exception as exc:
+            raise ModelError(
+                f"ollama: {exc} ({type(exc).__name__})",
+                kind=self.classify_error(exc),
+                provider=self.name,
+            ) from exc
 
     def has_model(self, model: str) -> bool:
         """Is the model already pulled locally?"""

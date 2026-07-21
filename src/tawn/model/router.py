@@ -7,14 +7,21 @@ Every attempt — success or failure — lands in the sovereignty ledger.
 """
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from decimal import Decimal
 from pathlib import Path
 
 from tawn.model.breaker import CircuitBreaker
 from tawn.model.keys import get_key
 from tawn.model.ledger import Ledger, estimate_cost
-from tawn.model.types import ErrorKind, Message, ModelError, ModelResponse, Provider
+from tawn.model.types import (
+    ErrorKind,
+    Message,
+    ModelError,
+    ModelResponse,
+    Provider,
+    StreamChunk,
+)
 
 RATE_LIMIT_BACKOFF_S = 2.0
 
@@ -49,7 +56,7 @@ class Router:
             tokens_out=tokens_out,
             cost_usd=estimate_cost(model, tokens_in, tokens_out),
             locality=p.locality,
-            sensitive=sensitive,
+            sensitive=bool(sensitive),
             ok=error is None,
             error=error.kind.value if error else "",
         )
@@ -115,6 +122,57 @@ class Router:
         )
 
 
+    def stream(self, msgs: list[Message], sensitive: bool = False) -> Iterator[StreamChunk]:
+        candidates = [
+            p for p in self.providers if not sensitive or p.locality == "local"
+        ]
+        if not candidates:
+            yield StreamChunk(
+                text="", done=True,
+                error="no eligible provider (sensitive requires a local model)",
+            )
+            return
+
+        for p in candidates:
+            if not self._breaker(p.name).allow():
+                continue
+            gen = p.stream_complete(msgs)
+            try:
+                first = next(gen)
+            except StopIteration:
+                continue  # empty stream — try the next provider
+            except ModelError as e:
+                self._ledger(p, sensitive, None, e)
+                self._breaker(p.name).record_failure()
+                continue  # pre-output failure — fail over exactly like complete()
+
+            # First chunk reached the caller: committed to this provider now.
+            tokens_in = tokens_out = 0
+            try:
+                yield first
+                if first.done:
+                    tokens_in, tokens_out = first.tokens_in or 0, first.tokens_out or 0
+                for chunk in gen:
+                    yield chunk
+                    if chunk.done:
+                        tokens_in, tokens_out = chunk.tokens_in or 0, chunk.tokens_out or 0
+            except ModelError as e:
+                self._ledger(p, sensitive, None, e)
+                self._breaker(p.name).record_failure()
+                yield StreamChunk(text="", done=True, error=str(e))
+                return
+
+            resp = ModelResponse(
+                text="", model=getattr(p, "model", ""), provider=p.name,
+                tokens_in=tokens_in, tokens_out=tokens_out,
+            )
+            self._ledger(p, sensitive, resp, None)
+            self._breaker(p.name).record_success()
+            return
+
+        yield StreamChunk(text="", done=True, error="all providers unavailable")
+
+
 def _make_anthropic(key: str) -> Provider:
     from tawn.model.providers.anthropic import AnthropicProvider
 
@@ -139,6 +197,36 @@ def _make_deepseek(key: str) -> Provider:
     return deepseek_provider(key)
 
 
+def _make_openrouter(key: str) -> Provider:
+    from tawn.model.providers.openai_compat import openrouter_provider
+
+    return openrouter_provider(key)
+
+
+def _make_kimi(key: str) -> Provider:
+    from tawn.model.providers.openai_compat import kimi_provider
+
+    return kimi_provider(key)
+
+
+def _make_qwen(key: str) -> Provider:
+    from tawn.model.providers.openai_compat import qwen_provider
+
+    return qwen_provider(key)
+
+
+def _make_groq(key: str) -> Provider:
+    from tawn.model.providers.openai_compat import groq_provider
+
+    return groq_provider(key)
+
+
+def _make_grok(key: str) -> Provider:
+    from tawn.model.providers.openai_compat import grok_provider
+
+    return grok_provider(key)
+
+
 # priority order — a provider joins the router the moment its key exists
 # (`tawn key set <name>` or <NAME>_API_KEY). Ollama is always last: the
 # no-key default and the only sensitive-eligible provider.
@@ -147,6 +235,11 @@ CLOUD_REGISTRY: list[tuple[str, Callable[[str], Provider]]] = [
     ("openai", _make_openai),
     ("gemini", _make_gemini),
     ("deepseek", _make_deepseek),
+    ("openrouter", _make_openrouter),
+    ("kimi", _make_kimi),
+    ("qwen", _make_qwen),
+    ("groq", _make_groq),
+    ("grok", _make_grok),
 ]
 
 
@@ -157,6 +250,11 @@ PROVIDER_MODELS: dict[str, list[str]] = {
     "openai": ["gpt-5.1"],
     "gemini": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
     "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "openrouter": ["openai/gpt-4o", "anthropic/claude-opus-4", "meta-llama/llama-3.3-70b-instruct"],
+    "kimi": ["moonshot-v1-128k", "moonshot-v1-32k"],
+    "qwen": ["qwen-max", "qwen-plus", "qwen-turbo"],
+    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+    "grok": ["grok-3", "grok-3-mini", "grok-2"],
 }
 
 

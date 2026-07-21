@@ -9,6 +9,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from tawn.config import settings
+import tawn.memory.schema as _memory_schema  # registers memory models with their own Base
 
 
 class Base(DeclarativeBase):
@@ -33,9 +34,17 @@ def make_engine(url: str | None = None) -> Engine:
 
 def init_db(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    _memory_schema.Base.metadata.create_all(engine)
 
 
 @contextmanager
 def session(engine: Engine):
+    with Session(engine) as s:
+        yield s
+
+
+def get_session():
+    """FastAPI dependency — yields a Session bound to the default engine."""
+    engine = make_engine()
     with Session(engine) as s:
         yield s

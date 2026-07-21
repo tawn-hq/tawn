@@ -26,33 +26,54 @@ def _seed(engine):
         s.commit()
 
 
-def test_home_lists_domains(db_engine):
-    _seed(db_engine)
+def test_api_status_reports_home_and_db(db_engine, tawn_home):
+    tawn_home.mkdir(parents=True, exist_ok=True)
     client = TestClient(create_app(db_engine))
-    resp = client.get("/")
+    resp = client.get("/api/status")
     assert resp.status_code == 200
-    assert "wealth" in resp.text
-    assert "25000" in resp.text  # overview shows net worth line
+    assert "initialized" in resp.json()
 
 
-def test_api_wealth_latest_returns_state(db_engine):
-    _seed(db_engine)
+def test_api_domains_lists_enabled_domains(db_engine, tawn_home, monkeypatch):
+    import tawn.web.app as web_app_mod
+
+    monkeypatch.setattr(
+        web_app_mod,
+        "enabled_domains",
+        lambda home=None: [
+            type(
+                "D",
+                (),
+                {
+                    "name": "wealth",
+                    "label": "Wealth",
+                    "nav": True,
+                    "api_router": None,
+                    "cli": None,
+                },
+            )()
+        ],
+    )
     client = TestClient(create_app(db_engine))
-    resp = client.get("/api/wealth/latest")
+    resp = client.get("/api/domains")
     assert resp.status_code == 200
-    assert resp.json()["total_ngn"] == "25000"
+    assert resp.json() == [{"name": "wealth", "label": "Wealth", "nav": True}]
 
 
-def test_api_wealth_latest_404_when_empty(db_engine):
-    client = TestClient(create_app(db_engine))
-    assert client.get("/api/wealth/latest").status_code == 404
+def test_api_wealth_latest_returns_state(db_engine, tawn_home):
+    tawn_home.mkdir(parents=True, exist_ok=True)
+    import yaml
 
-
-def test_wealth_page_serves_html_with_total(db_engine):
+    (tawn_home / "domains.yaml").write_text(yaml.safe_dump({"enabled": ["wealth"]}))
     _seed(db_engine)
-    client = TestClient(create_app(db_engine))
-    resp = client.get("/wealth")
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers["content-type"]
-    assert "25000" in resp.text
-    assert "tawn" in resp.text.lower()
+    import tawn.domains.wealth.api as wealth_api_mod
+
+    orig_make_engine = wealth_api_mod.make_engine
+    wealth_api_mod.make_engine = lambda url=None: db_engine
+    try:
+        client = TestClient(create_app(db_engine))
+        resp = client.get("/api/wealth/latest")
+        assert resp.status_code == 200
+        assert resp.json()["total_ngn"] == "25000"
+    finally:
+        wealth_api_mod.make_engine = orig_make_engine

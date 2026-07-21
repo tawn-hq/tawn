@@ -59,7 +59,7 @@ class Ledger:
             "tokens_out": tokens_out,
             "cost_usd": _fmt(cost_usd),
             "locality": locality,
-            "sensitive": sensitive,
+            "sensitive": bool(sensitive),
             "ok": ok,
             "error": error,
         }

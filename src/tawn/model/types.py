@@ -4,6 +4,8 @@ The router never touches a vendor SDK; adapters translate to/from
 these shapes and normalize vendor errors into ErrorKind.
 """
 
+from collections.abc import Iterator
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, Protocol
 
@@ -21,6 +23,19 @@ class ModelResponse(BaseModel):
     provider: str
     tokens_in: int = 0
     tokens_out: int = 0
+
+
+@dataclass
+class StreamChunk:
+    """One increment of a streaming completion. `done=True` marks the
+    final chunk, carrying usage (success) or `error` (failure) instead of
+    more text."""
+
+    text: str
+    done: bool = False
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    error: str | None = None
 
 
 class ErrorKind(StrEnum):
@@ -49,6 +64,8 @@ class Provider(Protocol):
     locality: Literal["local", "cloud"]
 
     def complete(self, msgs: list[Message], model: str | None = None) -> ModelResponse: ...
+
+    def stream_complete(self, msgs: list[Message], model: str | None = None) -> Iterator[StreamChunk]: ...
 
     def count_tokens(self, msgs: list[Message]) -> int: ...
 

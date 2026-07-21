@@ -112,3 +112,24 @@ def test_error_never_leaks_api_key():
         p.complete(MSGS)
     assert "sk-SECRET123" not in str(ei.value)
     assert ei.value.kind is ErrorKind.SERVER_ERROR
+
+
+def test_stream_complete_yields_chunks_then_done():
+    def make_chunk(text=None, usage=None):
+        return SimpleNamespace(text=text, usage_metadata=usage)
+
+    class FakeModelsStreaming(FakeModels):
+        def generate_content_stream(self, *, model, contents, config=None):
+            self.calls.append({"model": model, "contents": contents, "config": config})
+            return iter([
+                make_chunk(text="hi "),
+                make_chunk(text="there", usage=SimpleNamespace(prompt_token_count=9, candidates_token_count=4)),
+            ])
+
+    client = SimpleNamespace(models=FakeModelsStreaming())
+    p = GeminiProvider(api_key="sk-test", client=client)
+    chunks = list(p.stream_complete(MSGS))
+    text_chunks = [c for c in chunks if not c.done]
+    assert "".join(c.text for c in text_chunks) == "hi there"
+    final = chunks[-1]
+    assert final.done and final.tokens_in == 9 and final.tokens_out == 4

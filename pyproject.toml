@@ -23,6 +23,10 @@ dependencies = [
     "ollama>=0.4",
     "anthropic>=0.100",
     "openai>=2.0",
+    "pgvector>=0.3",
+    "fastmcp>=2.0",
+    "python-frontmatter>=1.1",
+    "rapidfuzz>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -31,8 +35,18 @@ dev = ["pytest>=8.0", "respx>=0.21"]
 [project.scripts]
 tawn = "tawn.cli:app"
 
+[project.entry-points."tawn.domains"]
+wealth = "tawn.domains.wealth:register"
+work = "tawn.domains.work:register"
+research = "tawn.domains.research:register"
+academic = "tawn.domains.academic:register"
+hobby = "tawn.domains.hobby:register"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.tawn.scripts]
+build-web = "cd web && npm install && npm run build"

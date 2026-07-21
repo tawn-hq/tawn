@@ -1,0 +1,109 @@
+"""Memory HTTP routes.
+
+POST /api/note             — write a note (queues compile via sentinel)
+POST /api/recall           — semantic/full-text search
+GET  /api/brief/{domain}   — domain knowledge summary dict
+GET  /api/compile/status   — pending flag + last-compile info
+POST /api/compile          — trigger a manual compile
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from tawn.db import get_session
+from tawn.home import tawn_home
+
+router = APIRouter()
+
+
+class NoteRequest(BaseModel):
+    payload: str
+    domain: Optional[str] = None
+    type: str = "note"
+    confidence: str = "medium"
+    source: str = "user"
+    ttl_days: Optional[int] = None
+
+
+class RecallRequest(BaseModel):
+    query: str
+    limit: int = 10
+    domain: Optional[str] = None
+    format: str = "chunks"
+
+
+@router.post("/note")
+def write_note(req: NoteRequest):
+    from tawn.memory.note import note
+    home = tawn_home()
+    result = note(
+        req.payload,
+        domain=req.domain,
+        type=req.type,
+        confidence=req.confidence,
+        source=req.source,
+        ttl_days=req.ttl_days,
+        home=home,
+    )
+    return result
+
+
+@router.post("/recall")
+def search_recall(req: RecallRequest, session: Session = Depends(get_session)):
+    from tawn.memory.recall import recall
+    home = tawn_home()
+    result = recall(
+        req.query,
+        home,
+        session,
+        limit=req.limit,
+        domain=req.domain,
+        format=req.format,
+    )
+    if isinstance(result, str):
+        return {"composed": result}
+    return [
+        {
+            "source_path": c.source_path,
+            "chunk_index": c.chunk_index,
+            "content": c.content,
+            "priority_tier": c.priority_tier,
+            "domain": c.domain,
+        }
+        for c in result
+    ]
+
+
+@router.get("/brief/{domain}")
+def get_brief(domain: str, session: Session = Depends(get_session)):
+    from tawn.memory.brief import brief
+    home = tawn_home()
+    return brief(domain, home, session)
+
+
+@router.get("/compile/status")
+def get_compile_status(session: Session = Depends(get_session)):
+    from tawn.compiler.compiler import compile_status
+    home = tawn_home()
+    return compile_status(home, session)
+
+
+@router.post("/compile")
+def trigger_compile(rebuild: bool = False, session: Session = Depends(get_session)):
+    from tawn.compiler.compiler import run_compile
+    home = tawn_home()
+    result = run_compile(home, session, verbose=False)
+    session.commit()
+    return {
+        "ok": result.ok,
+        "files_processed": result.files_processed,
+        "chunks_added": result.chunks_added,
+        "chunks_removed": result.chunks_removed,
+        "entities_resolved": result.entities_resolved,
+        "finished_at": result.finished_at.isoformat(),
+    }
