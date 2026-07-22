@@ -29,8 +29,10 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from tawn.compiler.classifier import classify
 from tawn.compiler.conflicts import resolve_conflicts
-from tawn.compiler.delta import scan_raw, update_file_state
+from tawn.compiler.delta import _IGNORE_DIRS, scan_granted, scan_history, scan_raw, update_file_state
+from tawn.ignore import load_ignore_patterns, should_ignore as _should_ignore
 from tawn.compiler.embedder import EmbedError, embed_text
 from tawn.compiler.entities import extract_and_resolve
 from tawn.compiler.parser import ParsedChunk, parse_file
@@ -115,43 +117,135 @@ def run_compile(
     review_dir = raw_dir / "review-queue"
 
     try:
-        # Phase 1 — Delta detection
+        # load grants for external path scanning
+        from tawn.capability.grants import Grants
+        grants = Grants.load(home / "grants.yaml")
+        granted_read = list(grants.read)
+
+        # Phase 0 — Purge chunks from ignored paths (venvs, node_modules, user rules)
+        _dir_segs, _glob_pats, _abs_paths = load_ignore_patterns(home)
+        all_source_paths = [row[0] for row in session.query(Chunk.source_path).distinct().all()]
+        purge_paths = {
+            p for p in all_source_paths
+            if _should_ignore(Path(p), _dir_segs, _glob_pats, _abs_paths)
+        }
+        if purge_paths:
+            session.query(Chunk).filter(Chunk.source_path.in_(purge_paths)).delete(synchronize_session=False)
+            session.query(FileState).filter(FileState.path.in_(purge_paths)).delete(synchronize_session=False)
+            session.flush()
+
+        # Phase 1 — Delta detection (raw/ + granted paths + history)
         if rebuild:
             session.query(Chunk).delete()
             session.query(FileState).delete()
             session.flush()
-            delta_files_new = list(raw_dir.rglob("*.md")) if raw_dir.exists() else []
+            _text_exts = {".md", ".txt", ".rst"}
+            delta_files_new = (
+                [f for f in raw_dir.rglob("*") if f.is_file() and f.suffix.lower() in _text_exts]
+                if raw_dir.exists() else []
+            )
+            # also include granted paths and history in rebuild
+            for root in granted_read:
+                root = root.expanduser().resolve()
+                if root.exists():
+                    glob = root.rglob("*") if root.is_dir() else [root]
+                    delta_files_new += [f for f in glob if f.is_file() and f.suffix.lower() in _text_exts]
+            hist_dir = home / "history"
+            if hist_dir.exists():
+                delta_files_new += list(hist_dir.glob("*.jsonl"))
+            # agent memory: Claude Code project memory files
+            _claude_projects = Path.home() / ".claude" / "projects"
+            if _claude_projects.exists():
+                _text_exts2 = {".md", ".txt", ".rst"}
+                for _mem_dir in _claude_projects.glob("*/memory"):
+                    if _mem_dir.is_dir():
+                        delta_files_new += [
+                            f for f in _mem_dir.rglob("*")
+                            if f.is_file() and f.suffix.lower() in _text_exts2
+                            and f.name != "MEMORY.md"
+                        ]
             delta_files_changed: list[Path] = []
             delta_files_deleted: list[Path] = []
         else:
-            from tawn.compiler.delta import DeltaResult
-            delta = scan_raw(raw_dir, session)
-            delta_files_new = delta.new
-            delta_files_changed = delta.changed
-            delta_files_deleted = delta.deleted
+            from tawn.compiler.delta import DeltaResult, scan_agent_memory
+            raw_delta = scan_raw(raw_dir, session)
+            granted_delta = scan_granted(granted_read, session)
+            history_delta = scan_history(home, session)
+            agent_mem_delta = scan_agent_memory(session)
+            delta_files_new = raw_delta.new + granted_delta.new + history_delta.new + agent_mem_delta.new
+            delta_files_changed = raw_delta.changed + granted_delta.changed + history_delta.changed + agent_mem_delta.changed
+            delta_files_deleted = raw_delta.deleted  # only hard-delete from raw/
 
         files_to_process = delta_files_new + delta_files_changed
         files_processed = len(files_to_process)
 
-        # Phase 2 — Parse
+        # Phase 2 — Parse (with domain classification for external files)
+        raw_str = str(raw_dir)
+        hist_str = str(home / "history")
         all_chunks: list[ParsedChunk] = []
         for path in files_to_process:
             try:
-                all_chunks.extend(parse_file(path))
+                path_str = str(path)
+                # classify domain for files outside raw/ (i.e. granted paths + history)
+                inferred_domain: str | None = None
+                if not path_str.startswith(raw_str) and not path_str.startswith(hist_str):
+                    try:
+                        content_preview = path.read_text(encoding="utf-8", errors="replace")[:2000]
+                        inferred_domain = classify(path, content_preview)
+                    except Exception:
+                        pass
+                chunks = parse_file(path, domain=inferred_domain)
+                # for history chunks: run classifier on content for domain
+                if path_str.startswith(hist_str):
+                    for chunk in chunks:
+                        if not chunk.frontmatter.get("domain"):
+                            d = classify(path, chunk.content)
+                            if d:
+                                chunk.frontmatter["domain"] = d
+                all_chunks.extend(chunks)
             except Exception:
                 pass
 
         # Phase 3 — Conflict resolution
         resolved_chunks = resolve_conflicts(all_chunks, wiki_dir=wiki_dir)
 
-        # Phase 4 — Entity resolution
+        # Phase 4 — Entity resolution (skip federation/history/agent-memory imports)
+        # These are high-volume, unstructured — entity extraction is quadratic
+        # and adds no signal. Only run on raw/ (curated) documents.
+        raw_str_prefix = str(raw_dir)
+        import_str = str(raw_dir / "imports")
+        hist_prefix = str(home / "history")
+        agent_mem_prefix = str(Path.home() / ".claude" / "projects")
+        structured_chunks = [
+            c for c in resolved_chunks
+            if (c.source_path.startswith(raw_str_prefix)
+                and not c.source_path.startswith(import_str)
+                and not c.source_path.startswith(hist_prefix))
+            and not c.source_path.startswith(agent_mem_prefix)
+        ]
         review_dir.mkdir(parents=True, exist_ok=True)
-        entities_resolved = extract_and_resolve(resolved_chunks, session, review_dir)
+        with session.no_autoflush:
+            entities_resolved = extract_and_resolve(structured_chunks, session, review_dir)
 
         # Phase 5+6 — Embed + write chunks
+        # Preload all existing chunks for the files being compiled (bulk lookup
+        # avoids N+1 queries — one SELECT per chunk in the naive approach).
+        source_paths_in_batch = {p.source_path for p in resolved_chunks}
+        existing_chunks: dict[tuple[str, int], Chunk] = {}
+        if source_paths_in_batch:
+            with session.no_autoflush:
+                rows = (
+                    session.query(Chunk)
+                    .filter(Chunk.source_path.in_(source_paths_in_batch))
+                    .all()
+                )
+            existing_chunks = {(r.source_path, r.chunk_index): r for r in rows}
+
         chunks_added = 0
         embed_available = True
-        for parsed in resolved_chunks:
+        now = datetime.datetime.utcnow()
+        _BATCH = 200
+        for i, parsed in enumerate(resolved_chunks):
             embedding: list[float] | None = None
             if embed_available:
                 try:
@@ -159,37 +253,38 @@ def run_compile(
                 except EmbedError:
                     embed_available = False
 
-            existing = (
-                session.query(Chunk)
-                .filter_by(source_path=parsed.source_path, chunk_index=parsed.chunk_index)
-                .first()
-            )
+            safe_content = parsed.content.replace("\x00", "")
+            existing = existing_chunks.get((parsed.source_path, parsed.chunk_index))
             if existing:
                 if existing.content_hash != parsed.content_hash:
-                    existing.content = parsed.content
+                    existing.content = safe_content
                     existing.content_hash = parsed.content_hash
                     existing.priority_tier = parsed.priority_tier
                     existing.asof = parsed.asof
                     existing.ttl_days = parsed.ttl_days
                     existing.stale = False
-                    existing.compiled_at = datetime.datetime.utcnow()
+                    existing.compiled_at = now
                     if embedding is not None:
                         existing.embedding = _storable_embedding(embedding)
             else:
                 session.add(Chunk(
-                    domain=parsed.frontmatter.get("domain"),
+                    domain=parsed.frontmatter.get("domain") or parsed.frontmatter.get("inferred_domain"),
                     source_path=parsed.source_path,
                     chunk_index=parsed.chunk_index,
-                    content=parsed.content,
+                    content=safe_content,
                     embedding=_storable_embedding(embedding),
                     content_hash=parsed.content_hash,
                     priority_tier=parsed.priority_tier,
                     asof=parsed.asof,
                     ttl_days=parsed.ttl_days,
                     stale=False,
-                    compiled_at=datetime.datetime.utcnow(),
+                    compiled_at=now,
                 ))
                 chunks_added += 1
+
+            # Flush in batches to release memory pressure without a full commit
+            if (i + 1) % _BATCH == 0:
+                session.flush()
 
         # Remove chunks for deleted files
         chunks_removed = 0

@@ -19,7 +19,15 @@ Domains — pluggable data modules the user can extend, including by \
 describing a new one in plain English — currently enabled: {domains}. \
 You never move, trade, or spend money; you never write outside an \
 explicitly granted path; you never send sensitive content to a cloud \
-model.{profile_section}"""
+model.{profile_section}
+
+## Actions you can take
+When you need to take a real action, emit it on its own line using this exact syntax (the system will show the user an approve/reject button):
+  [ACTION:grant_read:/absolute/path]       — request read access to a directory
+  [ACTION:create_domain:name|description]  — generate + install a new domain module
+  [ACTION:compile]                          — trigger memory compilation
+  [ACTION:federation_scan]                  — scan + merge federation sources
+Only emit one action per response. After emitting, explain what will happen if the user approves, then stop. Resume when the user's next message confirms or rejects."""
 
 
 def baseline_system_prompt(tawn_home: Path) -> str:

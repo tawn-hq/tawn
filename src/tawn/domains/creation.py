@@ -6,36 +6,79 @@ from pathlib import Path
 from tawn.model.router import Router, usable_models
 from tawn.model.types import Message
 
-GENERATION_PROMPT = """You generate a Tawn domain module. Output ONLY the
-contents of a Python file — no markdown fences, no commentary.
+GENERATION_PROMPT = """You generate a Tawn domain module. Output ONLY a valid Python file — no markdown fences, no commentary, no explanation.
 
-Contract (must match exactly):
+## Strict rules
+- ONLY import from: standard library, typer, fastapi, pydantic, pathlib, yaml, json, rich, tawn.domains.base
+- NEVER import from tawn.lib, tawn.store, tawn.model, tawn.db, or any other tawn internal
+- Persist data using plain YAML or JSON files under pathlib.Path.home() / ".tawn" / "domains" / "<name>"
+- The file MUST define exactly one function: `def register() -> DomainSpec`
+
+## Data persistence pattern (use this exactly)
+    import json
+    from pathlib import Path
+
+    _DATA_PATH = Path.home() / ".tawn" / "domains" / "<domain-name>" / "data.json"
+
+    def _load() -> dict:
+        if not _DATA_PATH.exists():
+            return {{}}
+        return json.loads(_DATA_PATH.read_text())
+
+    def _save(data: dict) -> None:
+        _DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _DATA_PATH.write_text(json.dumps(data, indent=2))
+
+## View endpoint response shape
+    {{
+        "title": str,
+        "stat": {{"label": str, "value": str, "sublabel": str}},   # optional
+        "sections": [
+            {{"type": "table", "columns": ["Col1", "Col2"], "rows": [["a", "b"]]}},
+            {{"type": "list", "items": [{{"label": "key", "value": "val"}}]}},
+            {{"type": "empty", "message": "No data yet."}}
+        ]
+    }}
+
+## Minimal working example
     from tawn.domains.base import DomainSpec
+    import json, typer
+    from pathlib import Path
+    from fastapi import APIRouter
+
+    _DATA = Path.home() / ".tawn" / "domains" / "example" / "data.json"
+
+    def _load():
+        return json.loads(_DATA.read_text()) if _DATA.exists() else []
+
+    def _save(items):
+        _DATA.parent.mkdir(parents=True, exist_ok=True)
+        _DATA.write_text(json.dumps(items))
 
     def register() -> DomainSpec:
-        ...  # cli: typer.Typer | None, api_router: fastapi.APIRouter | None
+        cli = typer.Typer(help="Manage example items.")
+        api = APIRouter()
 
-The view endpoint on api_router, if present, must return:
-    {{"title": str, "stat": {{"label", "value", "sublabel"}}?, "sections": [...]}}
-where each section is {{"type": "table", "columns": [...], "rows": [[...]]}},
-{{"type": "list", "items": [{{"label", "value"?}}]}}, or
-{{"type": "empty", "message": str}}.
+        @cli.command("add")
+        def add(name: str):
+            items = _load(); items.append(name); _save(items)
+            typer.echo(f"Added {{name}}")
 
-Reference example (the wealth domain, for shape only):
-    from tawn.domains.base import DomainSpec
-    def register() -> DomainSpec:
-        import typer
-        from fastapi import APIRouter
-        app = typer.Typer()
-        router = APIRouter()
-
-        @router.get("/view")
+        @api.get("/view")
         def view():
-            return {{"title": "Example", "sections": [{{"type": "empty", "message": "no data yet"}}]}}
+            items = _load()
+            if not items:
+                return {{"title": "Example", "sections": [{{"type": "empty", "message": "No items yet."}}]}}
+            return {{
+                "title": "Example",
+                "sections": [{{"type": "list", "items": [{{"label": i}} for i in items]}}]
+            }}
 
-        return DomainSpec(name="example", label="Example", cli=app, api_router=router)
+        return DomainSpec(name="example", label="Example", cli=cli, api_router=api)
 
-User's description of the domain they want:
+Now generate the domain the user requested. Replace "example" with the correct domain name throughout.
+
+User's description:
 {description}
 """
 

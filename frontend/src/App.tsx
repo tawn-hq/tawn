@@ -1,30 +1,35 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import Home from './pages/Home'
+import Dashboard from './pages/Dashboard'
 import Chat from './pages/Chat'
+import Memory from './pages/Memory'
+import Agents from './pages/Agents'
+import Settings from './pages/Settings'
 import Setup from './pages/Setup'
-import GrantsPage from './pages/Grants'
 import DomainCreate from './pages/DomainCreate'
 import DomainPage from './pages/DomainPage'
-import Profile from './pages/Profile'
-import Audit from './pages/Audit'
-import History from './pages/History'
-import Models from './pages/Models'
-import Memory from './pages/Memory'
+import Logs from './pages/Logs'
+import MemoryDetail from './pages/MemoryDetail'
 
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Home />} />
+      <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/chat" element={<Chat />} />
+      <Route path="/memory" element={<Memory />} />
+      <Route path="/agents" element={<Agents />} />
+      <Route path="/settings" element={<Settings />} />
       <Route path="/setup" element={<Setup />} />
-      <Route path="/grants" element={<GrantsPage />} />
       <Route path="/domain/create" element={<DomainCreate />} />
       <Route path="/domain/:name" element={<DomainPage />} />
-      <Route path="/profile" element={<Profile />} />
-      <Route path="/audit" element={<Audit />} />
-      <Route path="/history" element={<History />} />
-      <Route path="/models" element={<Models />} />
-      <Route path="/memory" element={<Memory />} />
+      <Route path="/memory/chunk/:id" element={<MemoryDetail />} />
+      <Route path="/audit" element={<Navigate to="/settings" replace />} />
+      <Route path="/logs" element={<Logs />} />
+      <Route path="/grants" element={<Navigate to="/settings" replace />} />
+      <Route path="/profile" element={<Navigate to="/settings" replace />} />
+      <Route path="/history" element={<Navigate to="/chat" replace />} />
+      <Route path="/models" element={<Navigate to="/settings" replace />} />
     </Routes>
   )
 }

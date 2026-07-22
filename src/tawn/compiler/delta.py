@@ -23,14 +23,30 @@ def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+_TEXT_EXTS = {".md", ".txt", ".rst"}
+
+# Fallback hardcoded set used before home is known (e.g. compiler bootstrap).
+# The real patterns come from ~/.tawn/ignore via tawn.ignore.load_ignore_patterns().
+_IGNORE_DIRS: frozenset[str] = frozenset({
+    "node_modules", ".venv", "venv", "vevn", "env", ".env",
+    "__pycache__", ".git", ".svn", ".hg", ".bzr",
+    "site-packages", "dist-packages", "dist-info", "egg-info",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+    ".cache", ".npm", ".yarn", ".pnp",
+    "build", "dist", ".next", ".nuxt", ".output",
+    "coverage", ".nyc_output", "htmlcov",
+    "vendor", "Pods", "DerivedData",
+})
+
+
 def scan_raw(raw_dir: Path, session: Session) -> DeltaResult:
-    """Scan raw_dir for new/changed/deleted .md files vs file_state table."""
+    """Scan raw_dir for new/changed/deleted text files vs file_state table."""
     result = DeltaResult()
 
     disk_files: dict[str, Path] = {
         str(f): f
-        for f in raw_dir.rglob("*.md")
-        if f.is_file()
+        for f in raw_dir.rglob("*")
+        if f.is_file() and f.suffix.lower() in _TEXT_EXTS
     }
 
     known: dict[str, FileState] = {
@@ -51,6 +67,94 @@ def scan_raw(raw_dir: Path, session: Session) -> DeltaResult:
         if path_str not in disk_files:
             result.deleted.append(Path(path_str))
 
+    return result
+
+
+def scan_granted(read_paths: list[Path], session: Session, home: Path | None = None) -> DeltaResult:
+    """Scan user-granted read paths for new/changed text files."""
+    from tawn.home import tawn_home as _tawn_home
+    from tawn.ignore import load_ignore_patterns, should_ignore
+    _home = home or _tawn_home()
+    dir_segs, glob_pats, abs_paths = load_ignore_patterns(_home)
+
+    result = DeltaResult()
+    known: dict[str, FileState] = {
+        row.path: row
+        for row in session.query(FileState).all()
+    }
+    for root in read_paths:
+        root = root.expanduser().resolve()
+        if not root.exists():
+            continue
+        glob = root.rglob("*") if root.is_dir() else [root]
+        for f in glob:
+            if not f.is_file() or f.suffix.lower() not in _TEXT_EXTS:
+                continue
+            if should_ignore(f, dir_segs, glob_pats, abs_paths):
+                continue
+            path_str = str(f)
+            if path_str not in known:
+                result.new.append(f)
+            else:
+                state = known[path_str]
+                if f.stat().st_mtime != state.mtime and _file_hash(f) != state.content_hash:
+                    result.changed.append(f)
+    return result
+
+
+def scan_history(home: Path, session: Session) -> DeltaResult:
+    """Scan ~/.tawn/history/ for new/changed session JSONL files."""
+    result = DeltaResult()
+    history_dir = home / "history"
+    if not history_dir.exists():
+        return result
+    known: dict[str, FileState] = {
+        row.path: row
+        for row in session.query(FileState).all()
+    }
+    for f in history_dir.glob("*.jsonl"):
+        if not f.is_file():
+            continue
+        path_str = str(f)
+        if path_str not in known:
+            result.new.append(f)
+        else:
+            state = known[path_str]
+            if f.stat().st_mtime != state.mtime and _file_hash(f) != state.content_hash:
+                result.changed.append(f)
+    return result
+
+
+def scan_agent_memory(session: Session) -> DeltaResult:
+    """Scan Claude Code project memory dirs (~/.claude/projects/*/memory/).
+
+    These .md files contain structured notes (preferences, roles, project context)
+    written by Claude Code's auto-memory system. Valuable tawn input.
+    """
+    result = DeltaResult()
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.exists():
+        return result
+    known: dict[str, FileState] = {
+        row.path: row
+        for row in session.query(FileState).all()
+    }
+    for memory_dir in projects_dir.glob("*/memory"):
+        if not memory_dir.is_dir():
+            continue
+        for f in memory_dir.rglob("*"):
+            if not f.is_file() or f.suffix.lower() not in _TEXT_EXTS:
+                continue
+            # Skip index files that are just pointers to other memories
+            if f.name in ("MEMORY.md",):
+                continue
+            path_str = str(f)
+            if path_str not in known:
+                result.new.append(f)
+            else:
+                state = known[path_str]
+                if f.stat().st_mtime != state.mtime and _file_hash(f) != state.content_hash:
+                    result.changed.append(f)
     return result
 
 

@@ -319,10 +319,11 @@ def usable_models(home: Path) -> list[dict]:
     return rows
 
 
-def default_router(home: Path) -> Router:
+def default_router(home: Path, target: str | None = None) -> Router:
     """Every cloud provider with a key, in registry order; Ollama always.
     A `model:` preference in config.yaml moves that provider to the front
-    (and pins its model) — the rest of the chain stays as failover."""
+    (and pins its model) — the rest of the chain stays as failover.
+    `target` overrides the config preference for this call only."""
     from tawn.model.providers.ollama import OllamaProvider
 
     providers: list[Provider] = []
@@ -333,7 +334,7 @@ def default_router(home: Path) -> Router:
     chosen = local_model(Path(home))
     providers.append(OllamaProvider(model=chosen) if chosen else OllamaProvider())
 
-    pref = model_preference(Path(home))
+    pref = target or model_preference(Path(home))
     if pref:
         provider_name, model = split_preference(pref)
         for i, p in enumerate(providers):

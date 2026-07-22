@@ -15,6 +15,25 @@ import frontmatter  # python-frontmatter
 
 _MAX_CHARS = 3200  # ≈ 800 tokens at 4 chars/token
 
+# Patterns that indicate garbage/noise content not worth indexing
+_NOISE_PATTERNS = re.compile(
+    r"\[SYSTEM NOTIFICATION\]|<task-notification>|<output-file>|"
+    r"<system-reminder>|<command-name>|AUTOMATED.*NOT USER INPUT",
+    re.IGNORECASE,
+)
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _is_garbage(text: str) -> bool:
+    """True if content is mostly noise (system tags, UUID lists, etc.)."""
+    if _NOISE_PATTERNS.search(text):
+        return True
+    # Check if UUIDs dominate the content (raw JSON artifact lines)
+    uuid_chars = sum(len(m.group()) for m in _UUID_RE.finditer(text))
+    if uuid_chars > len(text) * 0.3:
+        return True
+    return False
+
 _TIER_MAP = {
     "identity": 1,
     "vault": 2,
@@ -87,8 +106,82 @@ def _split_by_size(text: str, max_chars: int = _MAX_CHARS) -> list[str]:
     return chunks
 
 
-def parse_file(path: Path) -> list[ParsedChunk]:
+def parse_history_session(path: Path) -> list[ParsedChunk]:
+    """Convert a JSONL chat session into ParsedChunks.
+
+    Each session becomes one or more chunks of alternating user/assistant turns,
+    chunked at _MAX_CHARS boundaries. Domain left None (classifier runs later).
+    """
+    import json as _json
+
+    lines = [_json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    if not lines:
+        return []
+
+    # derive title from first user message
+    user_lines = [l for l in lines if l.get("role") == "user"]
+    title = user_lines[0]["content"][:60].strip() if user_lines else path.stem
+
+    # Format conversation as readable text for chunking
+    turns: list[str] = []
+    for entry in lines:
+        role = entry.get("role", "")
+        content = entry.get("content", "").strip()
+        if role in ("user", "assistant") and content and not _is_garbage(content):
+            turns.append(f"[{role}]: {content}")
+
+    full_text = f"# Chat Session: {title}\n\n" + "\n\n".join(turns)
+
+    asof = datetime.datetime.utcfromtimestamp(path.stat().st_mtime)
+
+    raw_chunks = _split_by_size(full_text)
+    result: list[ParsedChunk] = []
+    for i, content in enumerate(raw_chunks):
+        if not content.strip():
+            continue
+        result.append(ParsedChunk(
+            source_path=str(path),
+            chunk_index=i,
+            content=content,
+            frontmatter={"source_type": "history", "title": title},
+            priority_tier=3,
+            asof=asof,
+        ))
+    return result
+
+
+def parse_text_file(path: Path, domain: str | None = None) -> list[ParsedChunk]:
+    """Parse a plain text (.txt/.rst) file into chunks."""
+    raw = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not raw:
+        return []
+    asof = datetime.datetime.utcfromtimestamp(path.stat().st_mtime)
+    fm: dict = {}
+    if domain:
+        fm["domain"] = domain
+    raw_chunks = _split_by_size(raw)
+    result: list[ParsedChunk] = []
+    for i, content in enumerate(raw_chunks):
+        if not content.strip() or _is_garbage(content):
+            continue
+        result.append(ParsedChunk(
+            source_path=str(path),
+            chunk_index=i,
+            content=content,
+            frontmatter=fm,
+            priority_tier=tier_for_path(path),
+            asof=asof,
+        ))
+    return result
+
+
+def parse_file(path: Path, domain: str | None = None) -> list[ParsedChunk]:
     """Parse a markdown file into a list of ParsedChunks."""
+    if path.suffix.lower() == ".jsonl":
+        return parse_history_session(path)
+    if path.suffix.lower() in (".txt", ".rst"):
+        return parse_text_file(path, domain)
+
     raw = path.read_text(encoding="utf-8")
     post = frontmatter.loads(raw)
     fm: dict = dict(post.metadata)
@@ -118,6 +211,8 @@ def parse_file(path: Path) -> list[ParsedChunk]:
     result: list[ParsedChunk] = []
     for i, content in enumerate(raw_chunks):
         if not content.strip():
+            continue
+        if _is_garbage(content):
             continue
         result.append(ParsedChunk(
             source_path=str(path),

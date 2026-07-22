@@ -33,8 +33,8 @@ _OLLAMA_MODELS: list[tuple[str, int]] = [
 
 _OPENAI_MODEL = "text-embedding-3-small"
 _OPENAI_DIMS = 1536
-_GEMINI_MODEL = "text-embedding-004"
-_GEMINI_DIMS = 768
+_GEMINI_MODEL = "gemini-embedding-001"  # replaces text-embedding-004 (3072 dims, supports matryoshka)
+_GEMINI_DIMS = 768  # request 768 via output_dimensionality for compat
 
 
 class EmbedError(Exception):
@@ -113,8 +113,17 @@ def _gemini_embed(text: str) -> list[float]:
         raise EmbedError("no GEMINI_API_KEY")
     try:
         from google import genai
-        client = genai.Client(api_key=api_key)
-        resp = client.models.embed_content(model=_GEMINI_MODEL, contents=text)
+        from google.genai import types as _gtypes
+        # text-embedding-004 is a v1 (stable) model — v1beta returns 404
+        client = genai.Client(api_key=api_key, http_options={"api_version": "v1"})
+        resp = client.models.embed_content(
+            model=_GEMINI_MODEL,
+            contents=text,
+            config=_gtypes.EmbedContentConfig(
+                task_type="RETRIEVAL_DOCUMENT",
+                output_dimensionality=_GEMINI_DIMS,
+            ),
+        )
         return resp.embeddings[0].values
     except Exception as exc:
         raise EmbedError(f"gemini: {exc}") from exc

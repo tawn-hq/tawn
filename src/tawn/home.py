@@ -11,17 +11,34 @@ SKELETON = [
     "raw/identity",
     "raw/vault",
     "raw/agent-notes",
+    "raw/imports",
     "raw/review-queue",
     "wiki",
     "wiki/.staging",
     "domains",
     "federation/inbox",
     "federation/adapters",
+    "federation/exports",
     "failures",
     "handoffs",
     "personality",
     "history",
 ]
+
+_CONFIG_STUB = """\
+# ~/.tawn/config.yaml — Tawn user preferences
+# Edit with: tawn config set <key> <value>
+# View all:  tawn config list
+theme: system
+model: auto
+web_port: 8787
+compile_interval_minutes: 5
+federation_merge_interval_minutes: 5
+memory_max_mb: null
+cpu_weight: 50
+db_pool_size: 2
+lazy_compile: true
+"""
 
 _MCP_SERVERS_STUB = """\
 # ~/.tawn/mcp_servers.yaml
@@ -56,4 +73,8 @@ def init_home(home: Path) -> list[Path]:
     if not stub.exists():
         stub.write_text(_MCP_SERVERS_STUB)
         stub.chmod(0o600)
+    cfg_stub = home / "config.yaml"
+    if not cfg_stub.exists():
+        cfg_stub.write_text(_CONFIG_STUB)
+        cfg_stub.chmod(0o600)
     return created

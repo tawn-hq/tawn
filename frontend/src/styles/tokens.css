@@ -69,3 +69,33 @@ a {
 a:hover {
   text-decoration: underline;
 }
+
+/* Markdown output in memory feed / recall cards */
+.tawn-md h1, .tawn-md h2, .tawn-md h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--tawn-text);
+  margin: 6px 0 2px;
+}
+.tawn-md p { margin: 0 0 4px; }
+.tawn-md ul, .tawn-md ol { margin: 0 0 4px 16px; }
+.tawn-md li { margin: 1px 0; }
+.tawn-md code {
+  font-family: var(--tawn-font-mono, monospace);
+  font-size: 12px;
+  background: var(--tawn-raised);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.tawn-md pre {
+  background: var(--tawn-raised);
+  padding: 8px 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 12px;
+  margin: 4px 0;
+}
+.tawn-md pre code { background: none; padding: 0; }
+.tawn-md strong { font-weight: 600; }
+.tawn-md em { font-style: italic; }
+.tawn-md hr { border: none; border-top: 1px solid var(--tawn-line); margin: 6px 0; }

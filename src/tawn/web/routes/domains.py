@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from tawn.domains.creation import generate_domain_source, has_usable_model
-from tawn.domains.registry import _load_local_domain, enable
+from tawn.domains.registry import _load_local_domain, enable, disable
 from tawn.home import tawn_home
 
 router = APIRouter()
@@ -61,6 +61,18 @@ def promote(name: str):
         shutil.rmtree(real_folder)
     shutil.move(str(draft_folder), str(real_folder))
     enable(name, home)
+    return {"ok": True}
+
+
+@router.post("/{name}/enable")
+def enable_domain(name: str):
+    enable(name, tawn_home())
+    return {"ok": True}
+
+
+@router.delete("/{name}/enable")
+def disable_domain(name: str):
+    disable(name, tawn_home())
     return {"ok": True}
 
 

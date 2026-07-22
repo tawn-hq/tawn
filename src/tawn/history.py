@@ -59,11 +59,15 @@ def list_sessions(home: Path) -> list[dict]:
             continue
         first = json.loads(lines[0])
         last = json.loads(lines[-1])
+        # derive title from first user message
+        user_lines = [l for l in lines if json.loads(l).get("role") == "user"]
+        title = json.loads(user_lines[0])["content"][:60].strip() if user_lines else p.stem
         sessions.append({
             "id": p.stem,
+            "title": title,
             "started": first.get("ts", ""),
             "last": last.get("ts", ""),
-            "turns": len([l for l in lines if json.loads(l).get("role") == "user"]),
+            "turns": len(user_lines),
             "model": last.get("model", ""),
         })
     return sessions

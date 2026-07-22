@@ -4,10 +4,32 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tawn"
-version = "0.0.1"
-description = "Tawn — the personal digital twin. Capability-gated memory core."
+version = "0.1.0"
+description = "Tawn — the personal digital twin. Local-first memory and context core for your work, wealth, research, and academic life."
+readme = "README.pypi.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Testimony Adekoya", email = "hello@databackedafrica.com" },
+]
+keywords = ["ai", "personal-ai", "digital-twin", "memory", "mcp", "rag", "local-first", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 requires-python = ">=3.12"
 dependencies = [
+    # core — always installed
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
     "PyYAML>=6.0",
@@ -19,18 +41,31 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
     "keyring>=25.0",
-    "google-genai>=1.0",
-    "ollama>=0.4",
-    "anthropic>=0.100",
-    "openai>=2.0",
-    "pgvector>=0.3",
-    "fastmcp>=2.0",
     "python-frontmatter>=1.1",
     "rapidfuzz>=3.0",
+    "watchfiles>=0.21",
 ]
 
 [project.optional-dependencies]
+# individual provider extras
+anthropic  = ["anthropic>=0.100"]
+openai     = ["openai>=2.0"]
+gemini     = ["google-genai>=1.0"]
+ollama     = ["ollama>=0.4"]
+vectors    = ["pgvector>=0.3"]
+mcp        = ["fastmcp>=2.0"]
+# convenience meta-extras
+providers  = ["anthropic>=0.100", "openai>=2.0", "google-genai>=1.0", "ollama>=0.4"]
+full       = [
+    "anthropic>=0.100", "openai>=2.0", "google-genai>=1.0",
+    "ollama>=0.4", "pgvector>=0.3", "fastmcp>=2.0",
+]
 dev = ["pytest>=8.0", "respx>=0.21"]
+
+[project.urls]
+Homepage = "https://github.com/tawn-hq/tawn"
+Repository = "https://github.com/tawn-hq/tawn"
+"Bug Tracker" = "https://github.com/tawn-hq/tawn/issues"
 
 [project.scripts]
 tawn = "tawn.cli:app"
@@ -45,8 +80,14 @@ hobby = "tawn.domains.hobby:register"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+tawn = [
+    "web/dist/**/*",
+    "web/dist/*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.tawn.scripts]
-build-web = "cd web && npm install && npm run build"
+build-web = "cd frontend && npm install && npm run build"
