@@ -7,7 +7,7 @@ every domain's api_router (if any) mounts at /api/<name>.
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.engine import Engine
@@ -23,7 +23,22 @@ FRONTEND_DIST = _pkg_dist if _pkg_dist.is_dir() else _dev_dist
 
 
 def create_app(engine: Engine) -> FastAPI:
-    app = FastAPI(title="tawn", docs_url=None, redoc_url=None)
+    app = FastAPI(title="tawn", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
+
+    @app.get("/api/docs", response_class=HTMLResponse, include_in_schema=False)
+    def api_docs():
+        # Scalar reads the same OpenAPI schema FastAPI already generates —
+        # no new Python dependency, just a CDN-loaded UI. Registered here
+        # (ahead of the SPA catch-all mounted at the bottom of this
+        # function) so it isn't swallowed by client-side routing.
+        return (
+            "<!doctype html><html><head><title>tawn API</title>"
+            '<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>'
+            "</head><body>"
+            '<script id="api-reference" data-url="/api/openapi.json"></script>'
+            '<script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>'
+            "</body></html>"
+        )
 
     @app.get("/api/status")
     def status():

@@ -120,7 +120,7 @@ def domain_enable(name: str) -> None:
     """Activate a discovered domain (pip package or local folder)."""
     from tawn.domains.registry import enable
 
-    enable(name, tawn_home())
+    enable(name, tawn_home(), actor="cli")
     typer.echo(f"{name}: enabled")
 
 
@@ -129,7 +129,7 @@ def domain_disable(name: str) -> None:
     """Deactivate a domain without uninstalling/deleting it."""
     from tawn.domains.registry import disable
 
-    disable(name, tawn_home())
+    disable(name, tawn_home(), actor="cli")
     typer.echo(f"{name}: disabled")
 
 
@@ -163,7 +163,7 @@ def domain_create(name: str) -> None:
         choice = typer.prompt("[a]ccept / [r]egenerate (describe differently) / [c]ancel", default="a")
         if choice.lower().startswith("a"):
             path = write_local_domain(home, name, source)
-            enable(name, home)
+            enable(name, home, actor="cli")
             typer.echo(f"{name} created at {path} and enabled")
             return
         if choice.lower().startswith("c"):
@@ -201,7 +201,7 @@ def _domain_create_wizard(name: str, home, console) -> None:
         f"    )\n"
     )
     (folder / "domain.py").write_text(domain_py)
-    enable(name, home)
+    enable(name, home, actor="cli")
     typer.echo(f"{name} created (field wizard) and enabled")
 
 
@@ -289,18 +289,55 @@ def _web_port_file(home: Path) -> Path:
 def _web_is_running(home: Path) -> tuple[bool, int]:
     """Returns (is_running, pid). pid=0 if not running."""
     import os
-    import signal
 
     pid_file = _web_pid_file(home)
     if not pid_file.exists():
         return False, 0
     try:
         pid = int(pid_file.read_text().strip())
-        os.kill(pid, signal.SIG_DFL)  # signal 0 = existence check
+        os.kill(pid, 0)  # signal 0: existence/permission check only, no-op otherwise
         return True, pid
     except (ValueError, ProcessLookupError, PermissionError):
         pid_file.unlink(missing_ok=True)
         return False, 0
+
+
+def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    """True if something is already listening on host:port."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
+def _pid_holding_port(port: int) -> int | None:
+    """Best-effort lookup of the PID bound to a port. Linux/macOS only; None elsewhere."""
+    import shutil
+    import subprocess
+
+    if shutil.which("lsof"):
+        try:
+            out = subprocess.run(
+                ["lsof", "-t", "-i", f":{port}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=3,
+            ).stdout.strip()
+            if out:
+                return int(out.splitlines()[0])
+        except Exception:
+            pass
+    if shutil.which("ss"):
+        try:
+            out = subprocess.run(
+                ["ss", "-ltnp", f"sport = :{port}"],
+                capture_output=True, text=True, timeout=3,
+            ).stdout
+            import re as _re
+            m = _re.search(r"pid=(\d+)", out)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            pass
+    return None
 
 
 web_app = typer.Typer(no_args_is_help=True, help="Web viewer daemon (start/stop/status).")
@@ -308,11 +345,19 @@ app.add_typer(web_app, name="web")
 
 
 @web_app.command("start")
-def web_start(port: int = typer.Option(8787, help="port on 127.0.0.1")) -> None:
-    """Start the tawn web viewer in the background."""
+def web_start(
+    port: int = typer.Option(8787, help="port on 127.0.0.1"),
+    force: bool = typer.Option(False, "--force", help="kill whatever holds the port and start anyway"),
+) -> None:
+    """Start the tawn web viewer in the background. Refuses to start a second
+    instance — checks the pidfile *and* the actual port, since anything that
+    binds the port outside this pidfile (e.g. a manually-run process) would
+    otherwise leave two servers answering the same port with no way to tell."""
     import os
+    import signal
     import sys
     import subprocess
+    import time
 
     home = tawn_home()
     running, pid = _web_is_running(home)
@@ -322,6 +367,28 @@ def web_start(port: int = typer.Option(8787, help="port on 127.0.0.1")) -> None:
         typer.echo(f"already running (pid {pid})")
         typer.echo(f"local  → {local_url}")
         return
+
+    if _port_in_use(port):
+        holder = _pid_holding_port(port)
+        if not force:
+            if holder:
+                typer.echo(f"port {port} is already in use by an untracked process (pid {holder})")
+                typer.echo(f"either stop it yourself (kill {holder}) or re-run with --force")
+            else:
+                typer.echo(f"port {port} is already in use by an untracked process")
+                typer.echo("re-run with --force to kill whatever is listening and take the port")
+            raise typer.Exit(1)
+        if holder:
+            try:
+                # SIGKILL doesn't exist on Windows — SIGTERM is the hardest
+                # signal os.kill can portably send there.
+                os.kill(holder, getattr(signal, "SIGKILL", signal.SIGTERM))
+                time.sleep(0.5)
+            except ProcessLookupError:
+                pass
+        if _port_in_use(port):
+            typer.echo(f"port {port} still in use after --force — give up")
+            raise typer.Exit(1)
 
     host_ok = _ensure_hosts_entry()
     local_url = f"http://tawn:{port}" if host_ok else f"http://127.0.0.1:{port}"
@@ -339,6 +406,27 @@ def web_start(port: int = typer.Option(8787, help="port on 127.0.0.1")) -> None:
     _web_pid_file(home).write_text(str(proc.pid))
     _web_port_file(home).write_text(str(port))
 
+    # confirm the process didn't immediately crash before declaring success.
+    # Only proc.poll() (did the process exit?) is a hard failure signal — the
+    # port-bind check is best-effort and can false-negative under sandboxed
+    # networking, so a slow/undetected bind must NOT delete the pidfile out
+    # from under a process that's actually alive and fine (that recreates the
+    # exact orphan-process problem this function exists to prevent).
+    bound = False
+    for _ in range(60):
+        if proc.poll() is not None:
+            _web_pid_file(home).unlink(missing_ok=True)
+            _web_port_file(home).unlink(missing_ok=True)
+            typer.echo(f"tawn web failed to start (exit code {proc.returncode}) — see {log_path}")
+            raise typer.Exit(1)
+        if _port_in_use(port):
+            bound = True
+            break
+        time.sleep(0.5)
+    if not bound:
+        typer.echo(f"tawn web (pid {proc.pid}) is still alive but port {port} isn't confirmed bound yet")
+        typer.echo(f"check with: tawn web status  (see {log_path} if it never comes up)")
+
     typer.echo(f"tawn web started (pid {proc.pid})")
     typer.echo(f"local  → {local_url}")
 
@@ -350,13 +438,26 @@ def web_start(port: int = typer.Option(8787, help="port on 127.0.0.1")) -> None:
 
 @web_app.command("stop")
 def web_stop() -> None:
-    """Stop the background web viewer."""
+    """Stop the background web viewer. Falls back to killing whatever holds the
+    tracked port if the pidfile is missing/stale but something is still bound."""
     import os
     import signal
 
     home = tawn_home()
     running, pid = _web_is_running(home)
     if not running:
+        port = int(_web_port_file(home).read_text().strip()) if _web_port_file(home).exists() else 8787
+        if _port_in_use(port):
+            holder = _pid_holding_port(port)
+            if holder:
+                # SIGKILL doesn't exist on Windows — SIGTERM is the hardest
+                # signal os.kill can portably send there.
+                os.kill(holder, getattr(signal, "SIGKILL", signal.SIGTERM))
+                _web_port_file(home).unlink(missing_ok=True)
+                typer.echo(f"tawn web is not running (no pidfile) — killed untracked process on port {port} (pid {holder})")
+                return
+            typer.echo(f"tawn web is not running, but something is bound to port {port} — could not identify the pid")
+            return
         typer.echo("tawn web is not running")
         return
     try:
@@ -722,6 +823,7 @@ def _chat_slash_federation(console, home, arg: str) -> None:
             console.print(f"[red]source '{name}' already registered[/]")
             return
         save_config(home, existing + [FedSource(name=name, path=path, adapter="generic")])
+        AuditLog(home / "audit.log").record("federation.source_add", name, ok=True, detail=path, actor="cli")
         console.print(f"  [dim]added '{name}' → {path}[/dim]")
 
     elif sub == "remove":
@@ -731,12 +833,13 @@ def _chat_slash_federation(console, home, arg: str) -> None:
         name = parts[1]
         sources = [s for s in load_config(home) if s.name != name]
         save_config(home, sources)
+        AuditLog(home / "audit.log").record("federation.source_remove", name, ok=True, actor="cli")
         console.print(f"  [dim]removed '{name}'[/dim]")
 
     elif sub == "merge":
         engine = make_engine()
         with SASession(engine) as s:
-            result = merge_pending(home, s)
+            result = merge_pending(home, s, actor="cli")
         console.print(
             f"  merged: {result['merged']}, failed: {result['failed']}, skipped: {result['skipped']}"
         )
@@ -1376,7 +1479,7 @@ def init() -> None:
         integrity_confirm(grants_path)
         typer.echo(f"wrote deny-all {grants_path}")
     audit = AuditLog(home / "audit.log")
-    audit.record("init", str(home), ok=True, detail=f"{len(created)} dirs created")
+    audit.record("init", str(home), ok=True, detail=f"{len(created)} dirs created", actor="cli")
     typer.echo(
         f"tawn home ready at {home} (deny-all; edit grants.yaml, then `tawn grant confirm`)"
     )
@@ -1427,7 +1530,7 @@ def grant_confirm() -> None:
         raise typer.Exit(1)
     digest = integrity_confirm(grants_path)
     AuditLog(home / "audit.log").record(
-        "grant.confirm", str(grants_path), ok=True, detail=digest
+        "grant.confirm", str(grants_path), ok=True, detail=digest, actor="cli"
     )
     typer.echo(f"confirmed grants.yaml ({digest[:12]}…)")
 
@@ -1610,6 +1713,7 @@ def fed_add(
     new = FedSource(name=name, path=path, adapter="generic",
                     format=format, auto_detected=False)
     save_config(home, existing + [new])
+    AuditLog(home / "audit.log").record("federation.source_add", name, ok=True, detail=path, actor="cli")
     typer.echo(f"added '{name}' → {path}")
     typer.echo("run `tawn grant confirm` to grant read access to this path")
 
@@ -1630,6 +1734,7 @@ def fed_remove(
         typer.echo(f"source '{name}' not found", err=True)
         raise typer.Exit(1)
     save_config(home, sources)
+    AuditLog(home / "audit.log").record("federation.source_remove", name, ok=True, actor="cli")
     typer.echo(f"removed '{name}'")
 
 
@@ -1644,7 +1749,7 @@ def fed_merge() -> None:
     home = tawn_home()
     engine = make_engine()
     with SASession(engine) as s:
-        result = merge_pending(home, s)
+        result = merge_pending(home, s, actor="cli")
     typer.echo(
         f"merge complete — merged: {result['merged']}, "
         f"failed: {result['failed']}, skipped: {result['skipped']}"

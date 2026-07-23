@@ -42,7 +42,11 @@ def test_merge_pending_creates_raw_file(home, db, tmp_path):
     result = merge_pending(home, db)
     assert result["merged"] >= 1
 
-    import_files = list((home / "raw" / "imports" / "claude-code").glob("*.md"))
+    # infer_project() derives a project name from the source file's parent
+    # dir when no `cwd` metadata is present, so the .md file lands one level
+    # deeper (raw/imports/claude-code/<project>/*.md) — search recursively
+    # rather than asserting a flat layout.
+    import_files = list((home / "raw" / "imports" / "claude-code").rglob("*.md"))
     assert len(import_files) == 1
     assert "test merge" in import_files[0].read_text()
 

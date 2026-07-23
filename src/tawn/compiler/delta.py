@@ -131,8 +131,10 @@ def scan_agent_memory(session: Session) -> DeltaResult:
     These .md files contain structured notes (preferences, roles, project context)
     written by Claude Code's auto-memory system. Valuable tawn input.
     """
+    from tawn.home import agent_memory_root
+
     result = DeltaResult()
-    projects_dir = Path.home() / ".claude" / "projects"
+    projects_dir = agent_memory_root()
     if not projects_dir.exists():
         return result
     known: dict[str, FileState] = {

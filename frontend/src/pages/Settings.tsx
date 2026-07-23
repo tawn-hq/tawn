@@ -2,12 +2,22 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import AppNav from '../components/AppNav'
 import { Card, Input, Textarea, Button, Checkbox, Badge } from '../ds'
-import { getGrants, putGrants, getProfile, putProfile, getDomains, getAllModels, enableDomain, disableDomain, getKeyStatus, postKey, type Grants, type DomainRow, type ModelRow } from '../lib/api'
+
+function useIsMobile() {
+  const [m, setM] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 639px)')
+    const h = (e: MediaQueryListEvent) => setM(e.matches)
+    mq.addEventListener('change', h)
+    return () => mq.removeEventListener('change', h)
+  }, [])
+  return m
+}
+import { getGrants, putGrants, confirmGrants, getProfile, putProfile, getDomains, getAllModels, enableDomain, disableDomain, getKeyStatus, postKey, getChunkStats, deleteChunks, postCompile, getAudit, verifyAudit, type Grants, type DomainRow, type ModelRow, type ChunkStats, type AuditPage } from '../lib/api'
 import { SetupWizard } from './Setup'
 import { LogsPanel } from './Logs'
-import { AuditPanel } from './Audit'
 
-type Tab = 'grants' | 'personality' | 'domains' | 'models' | 'exports' | 'integrations' | 'setup' | 'audit' | 'logs' | 'updates'
+type Tab = 'grants' | 'personality' | 'domains' | 'models' | 'exports' | 'integrations' | 'setup' | 'audit' | 'logs' | 'updates' | 'database'
 
 const TABS: { key: Tab; label: string; group: string }[] = [
   { key: 'grants', label: 'grants', group: 'privacy' },
@@ -17,6 +27,7 @@ const TABS: { key: Tab; label: string; group: string }[] = [
   { key: 'exports', label: 'exports', group: 'data' },
   { key: 'integrations', label: 'integrations', group: 'data' },
   { key: 'setup', label: 'setup', group: 'admin' },
+  { key: 'database', label: 'database', group: 'admin' },
   { key: 'audit', label: 'audit log', group: 'admin' },
   { key: 'logs', label: 'server logs', group: 'admin' },
   { key: 'updates', label: 'updates', group: 'admin' },
@@ -24,7 +35,39 @@ const TABS: { key: Tab; label: string; group: string }[] = [
 
 const GROUPS = ['privacy', 'system', 'data', 'admin']
 
-function SideNav({ active, setActive }: { active: Tab; setActive: (t: Tab) => void }) {
+function SideNav({ active, setActive, mobile }: { active: Tab; setActive: (t: Tab) => void; mobile: boolean }) {
+  if (mobile) {
+    // Fixed 160px column pushes content into a ~150px sliver on phones —
+    // a horizontal scroll strip of flat pills (no group headers, they only
+    // add vertical clutter in one row) keeps every tab reachable and full
+    // width goes to the actual panel content below it.
+    return (
+      <nav style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 10, marginBottom: 4, WebkitOverflowScrolling: 'touch' }}>
+        {TABS.map((t) => (
+          <div
+            key={t.key}
+            onClick={() => setActive(t.key)}
+            style={{
+              cursor: 'pointer',
+              padding: '7px 12px',
+              borderRadius: 999,
+              fontSize: 13,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+              fontWeight: active === t.key ? 600 : 400,
+              color: active === t.key ? 'var(--tawn-lapis)' : 'var(--tawn-text-2)',
+              background: active === t.key ? 'var(--tawn-lapis-soft)' : 'var(--tawn-raised)',
+              border: '1px solid var(--tawn-line)',
+              transition: 'background 0.12s',
+              userSelect: 'none',
+            }}
+          >
+            {t.label}
+          </div>
+        ))}
+      </nav>
+    )
+  }
   return (
     <nav style={{ width: 160, flexShrink: 0, paddingTop: 2 }}>
       {GROUPS.map((g) => {
@@ -98,8 +141,30 @@ function PathList({ label, paths, setPaths }: { label: string; paths: string[]; 
 function GrantsTab() {
   const [grants, setGrants] = useState<Grants | null>(null)
   const [status, setStatus] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [confirming, setConfirming] = useState(false)
 
-  useEffect(() => { getGrants().then(setGrants).catch(() => {}) }, [])
+  function load() {
+    setLoadError('')
+    getGrants().then(setGrants).catch((err: unknown) => {
+      setLoadError(err instanceof Error ? err.message : String(err))
+    })
+  }
+
+  useEffect(load, [])
+
+  async function reviewAndConfirm() {
+    setConfirming(true)
+    try {
+      const r = await confirmGrants()
+      if (r.ok) load()
+      else setLoadError(r.error || 'confirm failed')
+    } catch (err: unknown) {
+      setLoadError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setConfirming(false)
+    }
+  }
 
   async function save() {
     if (!grants) return
@@ -110,6 +175,21 @@ function GrantsTab() {
     } catch (err: unknown) {
       setStatus(`error: ${err instanceof Error ? err.message : String(err)}`)
     }
+  }
+
+  if (loadError) {
+    return (
+      <Card>
+        <p style={{ fontSize: 13, color: 'var(--tawn-crit)', marginBottom: 10 }}>{loadError}</p>
+        <p style={{ fontSize: 12, color: 'var(--tawn-text-3)', marginBottom: 14, lineHeight: 1.5 }}>
+          grants.yaml was changed outside the normal save flow. Review <code style={{ fontFamily: 'var(--tawn-font-mono)' }}>~/.tawn/grants.yaml</code> yourself, then confirm it below — or run <code style={{ fontFamily: 'var(--tawn-font-mono)' }}>tawn grant confirm</code> from a terminal.
+        </p>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button onClick={reviewAndConfirm} disabled={confirming}>{confirming ? 'confirming…' : "I've reviewed it — confirm"}</Button>
+          <Button variant="secondary" onClick={load}>retry</Button>
+        </div>
+      </Card>
+    )
   }
 
   if (!grants) return <Card><p style={{ fontSize: 13, color: 'var(--tawn-text-2)' }}>loading…</p></Card>
@@ -610,16 +690,268 @@ function UpdatesTab() {
   )
 }
 
+function DatabaseTab() {
+  const [stats, setStats] = useState<ChunkStats | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [confirm, setConfirm] = useState<'imports' | 'history' | 'all' | null>(null)
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function load() {
+    setLoading(true)
+    try { setStats(await getChunkStats()) } catch { /* ignore */ } finally { setLoading(false) }
+  }
+
+  useEffect(() => { load() }, [])
+
+  async function doClear(type: 'imports' | 'history' | 'all') {
+    setBusy(true)
+    setMsg('')
+    try {
+      const r = await deleteChunks(type)
+      setMsg(`deleted ${r.deleted} chunks`)
+      await load()
+    } catch (err) {
+      setMsg(`error: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusy(false)
+      setConfirm(null)
+    }
+  }
+
+  async function rebuild() {
+    setBusy(true)
+    setMsg('clearing all chunks…')
+    try {
+      await deleteChunks('all')
+      setMsg('rebuilding index…')
+      await postCompile()
+      setMsg('rebuild complete')
+      await load()
+    } catch (err) {
+      setMsg(`error: ${err instanceof Error ? err.message : String(err)}`)
+    } finally { setBusy(false) }
+  }
+
+  const StatRow = ({ label, value, sub }: { label: string; value: number; sub?: string }) => (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--tawn-line)' }}>
+      <span style={{ flex: 1, fontSize: 13, color: 'var(--tawn-text-2)' }}>{label}</span>
+      {sub && <span style={{ fontSize: 11, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>{sub}</span>}
+      <span style={{ fontSize: 15, fontWeight: 600, fontFamily: 'var(--tawn-font-mono)', minWidth: 48, textAlign: 'right' }}>{value.toLocaleString()}</span>
+    </div>
+  )
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <Card>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--tawn-text-2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 14 }}>chunk index</div>
+        {loading ? (
+          <p style={{ fontSize: 13, color: 'var(--tawn-text-2)' }}>loading…</p>
+        ) : stats ? (
+          <>
+            {stats.embed_model ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--tawn-line)' }}>
+                <span style={{ flex: 1, fontSize: 13, color: 'var(--tawn-text-2)' }}>active embedder</span>
+                <span style={{ fontSize: 13, fontWeight: 600, fontFamily: 'var(--tawn-font-mono)' }}>{stats.embed_model}</span>
+                <span style={{ fontSize: 11, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>{stats.embed_dims}d</span>
+              </div>
+            ) : (
+              <div style={{ padding: '8px 0', borderBottom: '1px solid var(--tawn-line)' }}>
+                <span style={{ fontSize: 13, color: 'var(--tawn-warn)' }}>no embed model locked yet — set one in Models tab</span>
+              </div>
+            )}
+            <StatRow label="total chunks" value={stats.total} />
+            <StatRow label="with embeddings" value={stats.with_embeddings} sub={stats.total ? `${Math.round(stats.with_embeddings / stats.total * 100)}%` : undefined} />
+            <StatRow label="agent memory" value={stats.by_type['agent-memory']} sub="project context" />
+            <StatRow label="raw notes" value={stats.by_type.raw} sub="your notes" />
+            <StatRow label="chat history" value={stats.by_type.history} />
+            <StatRow label="fed imports" value={stats.by_type.imports} sub="conversation exports" />
+            <div style={{ marginTop: 12 }}>
+              <Button size="sm" variant="secondary" onClick={load} disabled={loading}>refresh stats</Button>
+            </div>
+          </>
+        ) : (
+          <p style={{ fontSize: 13, color: 'var(--tawn-crit)' }}>failed to load stats</p>
+        )}
+      </Card>
+
+      <Card>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--tawn-text-2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>clear chunks</div>
+        <p style={{ fontSize: 12, color: 'var(--tawn-text-3)', marginBottom: 16, lineHeight: 1.5 }}>
+          Removes chunks from the index. Run compile after to reindex surviving files.
+        </p>
+
+        {[
+          { type: 'imports' as const, label: 'clear imported conversations', desc: 'Removes conversation export chunks (federation imports). Keeps notes, agent memory, and chat history.' },
+          { type: 'history' as const, label: 'clear chat history chunks', desc: 'Removes indexed chat session chunks. Raw chat files are not deleted.' },
+          { type: 'all' as const, label: 'clear all chunks', desc: 'Wipes the entire index. Run compile to rebuild.', danger: true },
+        ].map(({ type, label, desc, danger }) => (
+          <div key={type} style={{ marginBottom: 16, padding: '14px 16px', border: `1px solid ${danger ? 'var(--tawn-crit)' : 'var(--tawn-line)'}`, borderRadius: 8, opacity: danger ? 0.9 : 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: danger ? 'var(--tawn-crit)' : 'var(--tawn-text)' }}>{label}</div>
+            <div style={{ fontSize: 12, color: 'var(--tawn-text-3)', marginBottom: 10 }}>{desc}</div>
+            {confirm === type ? (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 12, color: 'var(--tawn-crit)' }}>are you sure?</span>
+                <Button size="sm" variant={danger ? 'danger' : 'secondary'} onClick={() => doClear(type)} disabled={busy}>confirm</Button>
+                <Button size="sm" variant="secondary" onClick={() => setConfirm(null)} disabled={busy}>cancel</Button>
+              </div>
+            ) : (
+              <Button size="sm" variant={danger ? 'danger' : 'secondary'} onClick={() => setConfirm(type)} disabled={busy}>{label}</Button>
+            )}
+          </div>
+        ))}
+
+        {msg && <div style={{ fontSize: 12, fontFamily: 'var(--tawn-font-mono)', marginTop: 8, color: msg.startsWith('error') ? 'var(--tawn-crit)' : 'var(--tawn-good)' }}>{msg}</div>}
+      </Card>
+
+      <Card>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--tawn-text-2)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>rebuild index</div>
+        <p style={{ fontSize: 12, color: 'var(--tawn-text-3)', marginBottom: 12, lineHeight: 1.5 }}>
+          Clears all chunks then runs a full compile pass — regenerates embeddings, re-classifies domains, and reindexes everything from scratch.
+        </p>
+        <Button variant="danger" onClick={rebuild} disabled={busy}>{busy ? msg || 'working…' : 'clear + rebuild'}</Button>
+      </Card>
+    </div>
+  )
+}
+
+const AUDIT_PAGE = 50
+
+function AuditPanel() {
+  const [data, setData] = useState<AuditPage>({ total: 0, entries: [] })
+  const [offset, setOffset] = useState(0)
+  const [intact, setIntact] = useState<boolean | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [verifying, setVerifying] = useState(false)
+
+  function load(off: number) {
+    setLoading(true)
+    getAudit(AUDIT_PAGE, off)
+      .then((d) => { setData(d); setOffset(off) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { load(0) }, [])
+
+  async function verify() {
+    setVerifying(true)
+    try {
+      const r = await verifyAudit()
+      setIntact(r.intact)
+    } catch {
+      setIntact(false)
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  const start = offset + 1
+  const end = Math.min(offset + AUDIT_PAGE, data.total)
+
+  const ACTOR_COLOR: Record<string, string> = {
+    web: 'var(--tawn-lapis)', cli: 'var(--tawn-good)', chat: 'var(--tawn-warn)',
+    mcp: 'var(--tawn-crit)', system: 'var(--tawn-text-3)',
+  }
+
+  return (
+    <div>
+      {/* toolbar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+        <span style={{ fontSize: 12, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)', marginRight: 4 }}>
+          {data.total} entries
+        </span>
+        <Button size="sm" variant="secondary" onClick={verify} disabled={verifying}>
+          {verifying ? 'verifying…' : 'verify chain'}
+        </Button>
+        <Button size="sm" variant="secondary" onClick={() => { const a = document.createElement('a'); a.href='/api/audit/export?format=json'; a.download='tawn-audit.json'; a.click() }}>
+          export JSON
+        </Button>
+        <Button size="sm" variant="secondary" onClick={() => { const a = document.createElement('a'); a.href='/api/audit/export?format=csv'; a.download='tawn-audit.csv'; a.click() }}>
+          export CSV
+        </Button>
+        {intact !== null && (
+          <Badge status={intact ? 'good' : 'crit'}>
+            {intact ? 'chain intact' : 'chain broken — possible tampering'}
+          </Badge>
+        )}
+      </div>
+
+      {/* table */}
+      {loading ? (
+        <div style={{ fontSize: 13, color: 'var(--tawn-text-2)', padding: '20px 0' }}>loading…</div>
+      ) : data.entries.length === 0 ? (
+        <div style={{ background: 'var(--tawn-raised)', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius)', padding: '28px 20px', textAlign: 'center' }}>
+          <div style={{ fontSize: 13, color: 'var(--tawn-text-2)' }}>no audit entries yet</div>
+          <div style={{ fontSize: 12, color: 'var(--tawn-text-3)', marginTop: 4, fontFamily: 'var(--tawn-font-mono)' }}>entries appear when tawn records FS access, grant changes, or model calls</div>
+        </div>
+      ) : (
+        <div style={{ border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius)', overflow: 'hidden' }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: 'var(--tawn-surface)', borderBottom: '1px solid var(--tawn-line)' }}>
+                  {['time', 'actor', 'op', 'target', 'ok', 'chain'].map((h) => (
+                    <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--tawn-text-2)', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.entries.map((e, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid var(--tawn-line)', background: i % 2 === 0 ? 'transparent' : 'var(--tawn-raised)' }}>
+                    <td style={{ padding: '8px 12px', fontFamily: 'var(--tawn-font-mono)', color: 'var(--tawn-text-3)', whiteSpace: 'nowrap' }}>
+                      {e.ts.replace('T', ' ').slice(0, 19)}
+                    </td>
+                    <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: 11, fontFamily: 'var(--tawn-font-mono)', color: ACTOR_COLOR[e.actor || 'system'] || 'var(--tawn-text-3)' }}>
+                        {e.actor || '—'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '8px 12px', fontFamily: 'var(--tawn-font-mono)', color: 'var(--tawn-lapis)', whiteSpace: 'nowrap' }}>
+                      {e.op}
+                    </td>
+                    <td style={{ padding: '8px 12px', fontFamily: 'var(--tawn-font-mono)', fontSize: 11, color: 'var(--tawn-text-2)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.target}>
+                      {e.target}
+                    </td>
+                    <td style={{ padding: '8px 12px' }}>
+                      <Badge status={e.ok ? 'good' : 'crit'}>{e.ok ? 'ok' : 'fail'}</Badge>
+                    </td>
+                    <td style={{ padding: '8px 12px', fontFamily: 'var(--tawn-font-mono)', fontSize: 11, color: 'var(--tawn-text-3)', whiteSpace: 'nowrap' }}>
+                      {e.chain.slice(0, 10)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* pagination */}
+          {data.total > AUDIT_PAGE && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderTop: '1px solid var(--tawn-line)', background: 'var(--tawn-surface)' }}>
+              <Button size="sm" variant="secondary" onClick={() => load(Math.max(0, offset - AUDIT_PAGE))} disabled={offset === 0}>← prev</Button>
+              <span style={{ fontSize: 12, color: 'var(--tawn-text-2)', fontFamily: 'var(--tawn-font-mono)' }}>
+                {start}–{end} of {data.total}
+              </span>
+              <Button size="sm" variant="secondary" onClick={() => load(offset + AUDIT_PAGE)} disabled={offset + AUDIT_PAGE >= data.total}>next →</Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Settings() {
   const [tab, setTab] = useState<Tab>('grants')
+  const mobile = useIsMobile()
   return (
     <div style={{ background: 'var(--tawn-bg)', minHeight: '100vh' }}>
       <AppNav />
-      <div style={{ maxWidth: 900, margin: '0 auto', padding: '32px 24px 64px' }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>settings</h1>
-        <p style={{ fontSize: 13, color: 'var(--tawn-text-2)', marginBottom: 28 }}>deny-all by default. every access is logged to the audit trail.</p>
-        <div style={{ display: 'flex', gap: 32, alignItems: 'flex-start' }}>
-          <SideNav active={tab} setActive={setTab} />
+      <div style={{ maxWidth: 900, margin: '0 auto', padding: mobile ? '20px 16px 48px' : '32px 24px 64px' }}>
+        <h1 style={{ fontSize: mobile ? 19 : 22, fontWeight: 700, marginBottom: 4 }}>settings</h1>
+        <p style={{ fontSize: 13, color: 'var(--tawn-text-2)', marginBottom: mobile ? 18 : 28 }}>deny-all by default. every access is logged to the audit trail.</p>
+        <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', gap: mobile ? 0 : 32, alignItems: mobile ? 'stretch' : 'flex-start' }}>
+          <SideNav active={tab} setActive={setTab} mobile={mobile} />
           <div style={{ flex: 1, minWidth: 0 }}>
             {tab === 'grants' && <GrantsTab />}
             {tab === 'personality' && <PersonalityTab />}
@@ -628,6 +960,7 @@ export default function Settings() {
             {tab === 'exports' && <ExportsTab />}
             {tab === 'integrations' && <IntegrationsTab />}
             {tab === 'setup' && <SetupWizard />}
+            {tab === 'database' && <DatabaseTab />}
             {tab === 'audit' && <AuditPanel />}
             {tab === 'logs' && <LogsPanel />}
             {tab === 'updates' && <UpdatesTab />}

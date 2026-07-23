@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { NavBar, Button, Badge, Logo } from '../ds'
+import { NavBar, Button, Badge, Logo, ThemeToggle } from '../ds'
 
 function useIsMobile() {
   const [m, setM] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640)
@@ -46,7 +46,7 @@ const INSTALL_METHODS = [
   },
   {
     label: 'clone',
-    cmd: 'git clone https://github.com/tawn-ai/tawn\ncd tawn && uv sync && uv run tawn init',
+    cmd: 'git clone https://github.com/tawn-hq/tawn\ncd tawn && uv sync && uv run tawn init',
     note: 'Dev mode',
   },
 ]
@@ -145,7 +145,7 @@ export default function Home() {
           { label: 'how it works', to: '#how' },
           { label: 'install', to: '#install' },
         ]}
-        right={<Button size="sm" onClick={onEnter}>open tawn</Button>}
+        right={<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><ThemeToggle /><Button size="sm" onClick={onEnter}>open tawn</Button></div>}
       />
 
       {/* ── Hero ── */}

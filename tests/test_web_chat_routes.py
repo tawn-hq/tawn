@@ -34,7 +34,7 @@ def test_chat_stream_returns_sse_events(tawn_home, monkeypatch):
     monkeypatch.setattr(
         chat_mod,
         "default_router",
-        lambda home: Router([EchoProvider()], Ledger(home / "ledger.jsonl")),
+        lambda home, target=None: Router([EchoProvider()], Ledger(home / "ledger.jsonl")),
     )
     app = FastAPI()
     app.include_router(router, prefix="/api/chat")

@@ -22,15 +22,26 @@ _NOISE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_TRACEBACK_HDR = re.compile(r"Traceback \(most recent call last\):", re.MULTILINE)
+_BOX_CHARS = frozenset("│╭╰╮╯├┤❱└┌┐╔╗╚╝╞╡")
 
 
 def _is_garbage(text: str) -> bool:
-    """True if content is mostly noise (system tags, UUID lists, etc.)."""
+    """True if content is mostly noise (system tags, UUID lists, tracebacks, Rich panels)."""
     if _NOISE_PATTERNS.search(text):
         return True
-    # Check if UUIDs dominate the content (raw JSON artifact lines)
+    # UUIDs dominate
     uuid_chars = sum(len(m.group()) for m in _UUID_RE.finditer(text))
     if uuid_chars > len(text) * 0.3:
+        return True
+    # Rich traceback box-drawing panels: >30% of non-empty lines start with box chars
+    lines = [l for l in text.splitlines() if l.strip()]
+    if lines:
+        box_lines = sum(1 for l in lines if (l.lstrip()[:1] in _BOX_CHARS))
+        if box_lines > len(lines) * 0.3:
+            return True
+    # Python tracebacks with ≥2 File entries
+    if _TRACEBACK_HDR.search(text) and text.count('  File "') >= 2:
         return True
     return False
 

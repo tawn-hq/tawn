@@ -25,6 +25,9 @@ def db_engine(tmp_path):
 @pytest.fixture()
 def client(db_engine, tmp_path, monkeypatch):
     monkeypatch.setenv("TAWN_HOME", str(tmp_path / "tawn"))
+    monkeypatch.setenv("TAWN_AGENT_MEMORY_DIR", str(tmp_path / "claude-projects"))
+    monkeypatch.setenv("TAWN_DETECT_PATH_CODEX", str(tmp_path / "codex-sessions"))
+    monkeypatch.setenv("TAWN_DETECT_PATH_GEMINI_CLI", str(tmp_path / "gemini-tmp"))
     home = tmp_path / "tawn"
     (home / "raw" / "imports").mkdir(parents=True)
     (home / "federation" / "adapters").mkdir(parents=True)

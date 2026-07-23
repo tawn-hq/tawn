@@ -1,15 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { marked } from 'marked'
 import AppNav from '../components/AppNav'
 import { Card, Button, Badge } from '../ds'
 
-marked.setOptions({ breaks: true })
-
 interface FedSource { name: string; path: string; domain: string | null; adapter: string | null }
 interface ConvMeta { id: number; source: string; source_path: string; project: string | null; domain: string | null; ingested_at: string | null }
-interface ConvTurn { role: string; content: string; ts: string }
-interface ConvDetail { id: number; source: string; project: string | null; domain: string | null; source_path: string; turns: ConvTurn[]; error?: string }
 
 function PromptModal({ onConfirm, onCancel }: { onConfirm: (v: string) => void; onCancel: () => void }) {
   const [val, setVal] = useState('')
@@ -29,64 +24,6 @@ function PromptModal({ onConfirm, onCancel }: { onConfirm: (v: string) => void; 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button onClick={onCancel} style={{ fontSize: 13, padding: '7px 16px', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'transparent', color: 'var(--tawn-text-2)', cursor: 'pointer' }}>cancel</button>
           <button onClick={() => val.trim() && onConfirm(val.trim())} disabled={!val.trim()} style={{ fontSize: 13, padding: '7px 16px', border: 'none', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-lapis)', color: '#fff', cursor: val.trim() ? 'pointer' : 'not-allowed', opacity: val.trim() ? 1 : 0.5 }}>add source</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ConvViewerModal({ conv, onClose, onContinueInChat }: { conv: ConvDetail; onClose: () => void; onContinueInChat: (turns: ConvTurn[]) => void }) {
-  const userTurns = conv.turns.filter((t) => t.role === 'user' || t.role === 'human')
-  const title = userTurns[0]?.content.slice(0, 80) || conv.source_path.split('/').pop() || 'conversation'
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 200, display: 'flex', alignItems: 'stretch', justifyContent: 'flex-end' }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div style={{ width: 'min(720px, 94vw)', background: 'var(--tawn-bg)', borderLeft: '1px solid var(--tawn-line)', display: 'flex', flexDirection: 'column', height: '100vh', overflowY: 'auto' }}>
-        {/* header */}
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--tawn-line)', position: 'sticky', top: 0, background: 'var(--tawn-bg)', zIndex: 10, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--tawn-text)', marginBottom: 3, lineHeight: 1.4 }}>{title}</div>
-            <div style={{ fontSize: 11, fontFamily: 'var(--tawn-font-mono)', color: 'var(--tawn-text-3)' }}>
-              {conv.source}{conv.project ? ` · ${conv.project}` : ''}{conv.domain ? ` · ${conv.domain}` : ''} · {conv.turns.length} turns
-            </div>
-          </div>
-          <Button size="sm" onClick={() => onContinueInChat(conv.turns)}>continue in chat →</Button>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: 'var(--tawn-text-3)', lineHeight: 1, padding: '2px 6px' }}>✕</button>
-        </div>
-        {/* turns */}
-        <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16, flex: 1 }}>
-          {conv.error && <div style={{ padding: 12, background: 'var(--tawn-crit-soft, #fee)', borderRadius: 8, fontSize: 13, color: 'var(--tawn-crit)' }}>error: {conv.error}</div>}
-          {conv.turns.length === 0 && !conv.error && <div style={{ fontSize: 13, color: 'var(--tawn-text-3)' }}>no turns found in this file</div>}
-          {conv.turns.map((t, i) => {
-            const isUser = t.role === 'user' || t.role === 'human'
-            const isThinking = t.role === 'thinking'
-            const html = marked.parse(t.content) as string
-            return (
-              <div key={i} style={{
-                display: 'flex', flexDirection: 'column',
-                alignItems: isUser ? 'flex-end' : 'flex-start',
-              }}>
-                <div style={{ fontSize: 10, fontFamily: 'var(--tawn-font-mono)', color: 'var(--tawn-text-3)', marginBottom: 4, paddingLeft: isUser ? 0 : 4 }}>
-                  {isThinking ? '◈ thinking' : isUser ? 'you' : t.role}
-                  {t.ts && ` · ${t.ts.slice(0, 16)}`}
-                </div>
-                <div
-                  className="tawn-md"
-                  dangerouslySetInnerHTML={{ __html: html }}
-                  style={{
-                    maxWidth: '88%', padding: '10px 14px',
-                    background: isUser ? 'var(--tawn-lapis-soft)' : isThinking ? 'var(--tawn-raised)' : 'var(--tawn-surface)',
-                    border: `1px solid ${isUser ? 'var(--tawn-lapis)' : 'var(--tawn-line)'}`,
-                    borderRadius: isUser ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-                    fontSize: 13, lineHeight: 1.65,
-                    color: isThinking ? 'var(--tawn-text-3)' : 'var(--tawn-text)',
-                    fontStyle: isThinking ? 'italic' : 'normal',
-                    wordBreak: 'break-word',
-                  }}
-                />
-              </div>
-            )
-          })}
         </div>
       </div>
     </div>
@@ -160,8 +97,6 @@ export default function Agents() {
   const [copied, setCopied] = useState<string | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set())
-  const [viewingConv, setViewingConv] = useState<ConvDetail | null>(null)
-  const [loadingConvId, setLoadingConvId] = useState<number | null>(null)
 
   useEffect(() => {
     fetch('/api/federation/sources')
@@ -198,35 +133,9 @@ export default function Agents() {
     })
   }
 
-  async function openConversation(id: number) {
-    setLoadingConvId(id)
-    try {
-      const data = await fetch(`/api/federation/conversations/${id}`).then((r) => r.json()) as ConvDetail
-      setViewingConv(data)
-    } catch { /* ignore */ }
-    setLoadingConvId(null)
-  }
-
-  function continueInChat(turns: ConvTurn[]) {
-    // Build a history array and navigate to chat with context
-    const history = turns
-      .filter((t) => t.role === 'user' || t.role === 'human' || t.role === 'assistant')
-      .map((t) => ({ role: t.role === 'human' ? 'user' : t.role, content: t.content }))
-    // Store in sessionStorage so Chat.tsx can pick it up
-    sessionStorage.setItem('tawn_continue_history', JSON.stringify(history))
-    navigate('/chat')
-  }
-
   return (
     <div style={{ background: 'var(--tawn-bg)', minHeight: '100vh' }}>
       {showAddModal && <PromptModal onConfirm={addSource} onCancel={() => setShowAddModal(false)} />}
-      {viewingConv && (
-        <ConvViewerModal
-          conv={viewingConv}
-          onClose={() => setViewingConv(null)}
-          onContinueInChat={(turns) => { setViewingConv(null); continueInChat(turns) }}
-        />
-      )}
       <AppNav />
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px 64px' }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>agents</h1>
@@ -280,15 +189,12 @@ export default function Agents() {
                   {expandedSources.has(s.name) && (
                     <SourceConversations
                       sourceName={s.name}
-                      onOpen={(id) => { setLoadingConvId(id); openConversation(id) }}
+                      onOpen={(id) => navigate(`/agents/conversation/${id}`)}
                     />
                   )}
                 </div>
               ))}
             </Card>
-          )}
-          {loadingConvId !== null && (
-            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>loading conversation…</div>
           )}
         </div>
 

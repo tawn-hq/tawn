@@ -60,19 +60,19 @@ def promote(name: str):
     if real_folder.exists():
         shutil.rmtree(real_folder)
     shutil.move(str(draft_folder), str(real_folder))
-    enable(name, home)
+    enable(name, home, actor="web")
     return {"ok": True}
 
 
 @router.post("/{name}/enable")
 def enable_domain(name: str):
-    enable(name, tawn_home())
+    enable(name, tawn_home(), actor="web")
     return {"ok": True}
 
 
 @router.delete("/{name}/enable")
 def disable_domain(name: str):
-    disable(name, tawn_home())
+    disable(name, tawn_home(), actor="web")
     return {"ok": True}
 
 

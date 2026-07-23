@@ -21,11 +21,13 @@ from tawn.memory.schema import Base, Chunk, CompileLog
 
 
 @pytest.fixture()
-def home(tmp_path):
+def home(tmp_path, monkeypatch):
     h = tmp_path / "tawn"
     for sub in ["raw/agent-notes", "raw/identity", "raw/vault",
                 "raw/review-queue", "wiki", "wiki/.staging"]:
         (h / sub).mkdir(parents=True)
+    # keep the real ~/.claude/projects out of this isolated compile run
+    monkeypatch.setenv("TAWN_AGENT_MEMORY_DIR", str(tmp_path / "claude-projects"))
     return h
 
 

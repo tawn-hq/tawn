@@ -34,30 +34,23 @@ def test_api_status_reports_home_and_db(db_engine, tawn_home):
     assert "initialized" in resp.json()
 
 
-def test_api_domains_lists_enabled_domains(db_engine, tawn_home, monkeypatch):
-    import tawn.web.app as web_app_mod
+def test_api_domains_lists_enabled_domains(db_engine, tawn_home):
+    # /api/domains lists every entry_points-discovered domain, marking
+    # nav=True for names present in domains.yaml's `enabled` list — mirrors
+    # the sibling test_api_wealth_latest_returns_state's setup pattern
+    # rather than mocking the registry's internals directly.
+    import yaml
 
-    monkeypatch.setattr(
-        web_app_mod,
-        "enabled_domains",
-        lambda home=None: [
-            type(
-                "D",
-                (),
-                {
-                    "name": "wealth",
-                    "label": "Wealth",
-                    "nav": True,
-                    "api_router": None,
-                    "cli": None,
-                },
-            )()
-        ],
-    )
+    tawn_home.mkdir(parents=True, exist_ok=True)
+    (tawn_home / "domains.yaml").write_text(yaml.safe_dump({"enabled": ["wealth"]}))
+
     client = TestClient(create_app(db_engine))
     resp = client.get("/api/domains")
     assert resp.status_code == 200
-    assert resp.json() == [{"name": "wealth", "label": "Wealth", "nav": True}]
+    body = resp.json()
+    by_name = {d["name"]: d for d in body}
+    assert by_name["wealth"] == {"name": "wealth", "label": "Wealth", "nav": True}
+    assert all(d["nav"] is False for name, d in by_name.items() if name != "wealth")
 
 
 def test_api_wealth_latest_returns_state(db_engine, tawn_home):

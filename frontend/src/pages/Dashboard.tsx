@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import AppNav from '../components/AppNav'
 import { StatCard, Card, Badge, Table, Button } from '../ds'
-import { getStatus, getDomains, getAudit, type DomainRow, type AuditEntry } from '../lib/api'
+import { getStatus, getDomains, getAudit, getChunkStats, type DomainRow, type AuditEntry } from '../lib/api'
 
 function useIsMobile() {
   const [m, setM] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640)
@@ -75,12 +75,16 @@ export default function Dashboard() {
   const [audit, setAudit] = useState<AuditEntry[]>([])
   const [initialized, setInitialized] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [agentCount, setAgentCount] = useState<number | null>(null)
+  const [chunkCount, setChunkCount] = useState<number | null>(null)
 
   useEffect(() => {
     Promise.all([
       getStatus().then((s) => setInitialized(s.initialized)).catch(() => {}),
       getDomains().then(setDomains).catch(() => {}),
       getAudit(8).then((p) => setAudit(p.entries)).catch(() => {}),
+      fetch('/api/federation/sources').then((r) => r.json()).then((s: unknown[]) => setAgentCount(s.length)).catch(() => {}),
+      getChunkStats().then((s) => setChunkCount(s.total)).catch(() => {}),
     ]).finally(() => setLoading(false))
   }, [])
 
@@ -121,10 +125,10 @@ export default function Dashboard() {
             <StatCard label="domains" value={loading ? '—' : enabledDomains.length || '0'} sublabel="enabled and tracking" />
             <StatCard label="context" value="local" sublabel="127.0.0.1 only, always" />
             <div style={{ cursor: 'pointer' }} onClick={() => navigate('/agents')}>
-              <StatCard label="agents" value="—" sublabel="connect via MCP" />
+              <StatCard label="agents" value={agentCount === null ? '—' : String(agentCount)} sublabel="federated sources" />
             </div>
             <div style={{ cursor: 'pointer' }} onClick={() => navigate('/memory')}>
-              <StatCard label="memory" value="—" sublabel="recall anything" />
+              <StatCard label="memory" value={chunkCount === null ? '—' : String(chunkCount)} sublabel="chunks indexed" />
             </div>
           </div>
         </FadeIn>

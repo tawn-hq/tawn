@@ -34,20 +34,20 @@ def _write_enabled(home: Path, names: set[str]) -> None:
     path.write_text(yaml.safe_dump({"enabled": sorted(names)}, sort_keys=True))
 
 
-def enable(name: str, home: Path | None = None) -> None:
+def enable(name: str, home: Path | None = None, actor: str = "system") -> None:
     home = home or tawn_home()
     names = enabled_names(home)
     names.add(name)
     _write_enabled(home, names)
-    AuditLog(home / "audit.log").record("domain.enable", name, ok=True)
+    AuditLog(home / "audit.log").record("domain.enable", name, ok=True, actor=actor)
 
 
-def disable(name: str, home: Path | None = None) -> None:
+def disable(name: str, home: Path | None = None, actor: str = "system") -> None:
     home = home or tawn_home()
     names = enabled_names(home)
     names.discard(name)
     _write_enabled(home, names)
-    AuditLog(home / "audit.log").record("domain.disable", name, ok=True)
+    AuditLog(home / "audit.log").record("domain.disable", name, ok=True, actor=actor)
 
 
 def discovered_entry_point_domains() -> dict[str, str]:

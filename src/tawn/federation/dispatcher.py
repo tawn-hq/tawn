@@ -9,6 +9,7 @@ from tawn.federation.adapters.base import BaseAdapter
 from tawn.federation.adapters.claude_ai import ClaudeAIAdapter
 from tawn.federation.adapters.chatgpt import ChatGPTAdapter
 from tawn.federation.adapters.gemini import GeminiAdapter
+from tawn.federation.adapters.gemini_cli import GeminiCliAdapter
 from tawn.federation.adapters.claude_code import ClaudeCodeAdapter
 from tawn.federation.adapters.codex import CodexAdapter
 from tawn.federation.adapters.generic import GenericAdapter
@@ -18,6 +19,7 @@ ADAPTER_CHAIN: list[BaseAdapter] = [
     ClaudeAIAdapter(),
     ChatGPTAdapter(),
     GeminiAdapter(),
+    GeminiCliAdapter(),
     ClaudeCodeAdapter(),
     CodexAdapter(),
     GenericAdapter(),

@@ -23,13 +23,33 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
-def _vector_column(dims: int):
+_DEFAULT_EMBED_DIMS = 768
+
+
+def _locked_embed_dims() -> int:
+    """Read embed_dims locked in ~/.tawn/config.yaml, or fall back to default."""
+    from tawn.home import tawn_home
+    cfg_path = tawn_home() / "config.yaml"
+    if cfg_path.exists():
+        try:
+            import yaml
+            cfg = yaml.safe_load(cfg_path.read_text()) or {}
+            dims = cfg.get("embed_dims")
+            if dims:
+                return int(dims)
+        except Exception:
+            pass
+    return _DEFAULT_EMBED_DIMS
+
+
+def _vector_column(dims: int | None = None):
     """Return a pgvector Vector column, or Text on SQLite / unconfigured."""
-    db_url = os.environ.get("TAWN_DB_URL", "")
+    from tawn.config import settings as _settings
+    db_url = os.environ.get("TAWN_DB_URL") or _settings().db_url
     if "postgresql" in db_url:
         try:
             from pgvector.sqlalchemy import Vector
-            return Column(Vector(dims), nullable=True)
+            return Column(Vector(dims or _locked_embed_dims()), nullable=True)
         except ImportError:
             pass
     return Column(Text, nullable=True)
@@ -47,7 +67,7 @@ class Chunk(Base):
     source_path = Column(Text, nullable=False)
     chunk_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
-    embedding = _vector_column(1024)
+    embedding = _vector_column()
     content_hash = Column(String(16), nullable=False)
     priority_tier = Column(SmallInteger, nullable=False, default=3)
     asof = Column(DateTime(timezone=True), nullable=False)

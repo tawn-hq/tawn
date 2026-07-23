@@ -15,13 +15,21 @@ def _start_auto_compiler(engine) -> None:
     from tawn.federation.merge import scan_all_sources, merge_pending
     from tawn.home import tawn_home
 
-    # Bootstrap: ingest + merge all existing federation files on startup
-    with db_session(engine) as s:
-        n = scan_all_sources(tawn_home(), s)
-        if n > 0:
-            merge_pending(tawn_home(), s)
+    def _bootstrap_then_loop():
+        # Bootstrap: ingest + merge all existing federation files on startup.
+        # Runs in this background thread, not before uvicorn.run() — a
+        # source directory can hold thousands of files (a size cap on
+        # individual files exists, but the walk itself over many entries
+        # still takes real time), and the web server must bind its port
+        # immediately regardless of how long that one-time scan takes.
+        try:
+            with db_session(engine) as s:
+                n = scan_all_sources(tawn_home(), s)
+                if n > 0:
+                    merge_pending(tawn_home(), s)
+        except Exception:
+            pass
 
-    def _loop():
         while True:
             try:
                 with db_session(engine) as session:
@@ -30,7 +38,7 @@ def _start_auto_compiler(engine) -> None:
                 pass
             time.sleep(30 * 60)  # 30-minute interval
 
-    t = threading.Thread(target=_loop, name="tawn-auto-compiler", daemon=True)
+    t = threading.Thread(target=_bootstrap_then_loop, name="tawn-auto-compiler", daemon=True)
     t.start()
 
 

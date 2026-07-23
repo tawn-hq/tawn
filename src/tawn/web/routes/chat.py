@@ -176,9 +176,19 @@ def execute_action(body: ActionBody):
             data = data or {}
             data["read"] = existing
             grants_path.write_text(_yaml.dump(data, default_flow_style=False))
+            # Re-confirm the integrity sidecar — every writer of grants.yaml
+            # must do this or the very next load_verified() call (e.g. the
+            # web UI's Grants tab) raises IntegrityError on a file this same
+            # request just wrote.
+            from tawn.capability.integrity import confirm as _integrity_confirm
+            digest = _integrity_confirm(grants_path)
             try:
                 from tawn.capability.audit import AuditLog
-                AuditLog(home / "audit.jsonl").record("grant.confirm (chat)", str(grants_path), True)
+                # Was "audit.jsonl" — a different file the /api/audit route
+                # never reads, so every grant made from a chat action was
+                # silently invisible in the audit tab. "audit.log" is the
+                # one file every other writer in this codebase uses.
+                AuditLog(home / "audit.log").record("grant.confirm (chat)", str(grants_path), True, detail=digest, actor="chat")
             except Exception:
                 pass
         return {"ok": True, "message": f"Read access granted to {p}"}
@@ -198,7 +208,7 @@ def execute_action(body: ActionBody):
         spec = _load_local_domain(folder)
         error = None if spec else "generated domain.py failed to import"
         if spec:
-            enable(body.name, home)
+            enable(body.name, home, actor="chat")
         return {"ok": spec is not None, "name": body.name, "error": error, "source": source[:200]}
 
     if body.kind == "compile":
@@ -215,7 +225,7 @@ def execute_action(body: ActionBody):
         engine = make_engine()
         with db_session(engine) as s:
             ingested = scan_all_sources(home, s)
-            result = merge_pending(home, s)
+            result = merge_pending(home, s, actor="chat")
         return {"ok": True, "ingested": ingested, "merged": result.get("merged", 0)}
 
     return {"ok": False, "error": f"unknown action kind: {body.kind}"}

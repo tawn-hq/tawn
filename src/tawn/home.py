@@ -61,6 +61,19 @@ def tawn_home() -> Path:
     return Path(os.environ.get("TAWN_HOME", "~/.tawn")).expanduser().resolve()
 
 
+def agent_memory_root() -> Path:
+    """Claude Code's project memory root (~/.claude/projects).
+
+    TAWN_AGENT_MEMORY_DIR overrides this — tests rely on it to keep the
+    real user's ~/.claude/projects out of isolated test runs, the same way
+    TAWN_HOME keeps ~/.tawn out.
+    """
+    override = os.environ.get("TAWN_AGENT_MEMORY_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".claude" / "projects"
+
+
 def init_home(home: Path) -> list[Path]:
     """Create the skeleton idempotently. Returns newly created dirs only."""
     created: list[Path] = []

@@ -12,23 +12,42 @@ from tawn.home import tawn_home
 from tawn.memory.schema import Chunk
 
 
+def _apply_base_filters(
+    query,
+    domain: str | None,
+    asof: datetime.datetime | None,
+    exclude_imports_prefix: str | None,
+):
+    query = query.filter(Chunk.stale.is_(False))
+    if domain:
+        query = query.filter(Chunk.domain == domain)
+    if asof:
+        query = query.filter(Chunk.compiled_at <= asof)
+    if exclude_imports_prefix:
+        query = query.filter(~Chunk.source_path.like(exclude_imports_prefix + "/%"))
+    return query
+
+
 def _cosine_search(
     session: Session,
     vec: list[float],
     domain: str | None,
     top_k: int,
     asof: datetime.datetime | None,
+    exclude_imports_prefix: str | None = None,
 ) -> list[Chunk]:
-    """Cosine similarity search; falls back to all chunks on SQLite."""
-    import os
-    db_url = os.environ.get("TAWN_DB_URL", "")
-    query = session.query(Chunk).filter(Chunk.stale.is_(False))
-    if domain:
-        query = query.filter(Chunk.domain == domain)
-    if asof:
-        query = query.filter(Chunk.compiled_at <= asof)
+    """Cosine similarity search; falls back to all chunks on SQLite.
 
-    if "postgresql" in db_url and vec:
+    Checks the session's actual bound dialect rather than the configured
+    db_url — a test (or any caller) can hold a SQLite session while the
+    configured default db_url still points at Postgres, and issuing a
+    pgvector-only `<=>` operator against SQLite is a hard syntax error,
+    not something to silently fall back from.
+    """
+    query = _apply_base_filters(session.query(Chunk), domain, asof, exclude_imports_prefix)
+    dialect = session.get_bind().dialect.name
+
+    if dialect == "postgresql" and vec:
         try:
             query = query.order_by(Chunk.embedding.cosine_distance(vec))  # type: ignore[attr-defined]
             return query.limit(top_k).all()
@@ -44,13 +63,10 @@ def _like_search(
     domain: str | None,
     top_k: int,
     asof: datetime.datetime | None,
+    exclude_imports_prefix: str | None = None,
 ) -> list[Chunk]:
     from sqlalchemy import or_
-    q = session.query(Chunk).filter(Chunk.stale.is_(False))
-    if domain:
-        q = q.filter(Chunk.domain == domain)
-    if asof:
-        q = q.filter(Chunk.compiled_at <= asof)
+    q = _apply_base_filters(session.query(Chunk), domain, asof, exclude_imports_prefix)
     keywords = [w.strip() for w in query_str.split() if len(w.strip()) > 2]
     if keywords:
         q = q.filter(or_(*[Chunk.content.ilike(f"%{kw}%") for kw in keywords]))
@@ -85,13 +101,17 @@ def recall(
                 sensitive=sensitive, asof=asof, home=home, session=s, router=router,
             )
 
+    # Exclude session imports (error logs, tracebacks) from recall by default.
+    # Fed-imports are conversation artifacts, not curated knowledge.
+    imports_prefix = str(home / "raw" / "imports")
+
     embed_error: str | None = None
     try:
         vec = embed_text(query, home)
-        chunks = _cosine_search(session, vec, domain, top_k, asof)
+        chunks = _cosine_search(session, vec, domain, top_k, asof, exclude_imports_prefix=imports_prefix)
     except EmbedError as e:
         embed_error = str(e)
-        chunks = _like_search(session, query, domain, top_k, asof)
+        chunks = _like_search(session, query, domain, top_k, asof, exclude_imports_prefix=imports_prefix)
 
     chunk_dicts = [
         {

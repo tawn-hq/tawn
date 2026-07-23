@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { marked } from 'marked'
+import { renderDiagramsIn } from '../lib/diagrams'
 
 marked.setOptions({ breaks: true })
 
@@ -18,10 +19,16 @@ export function ChatBubble({ role, children, streaming, time }: ChatBubbleProps)
     if (!contentRef.current) return
     if (isUser) {
       contentRef.current.textContent = children
-    } else {
-      contentRef.current.innerHTML = marked.parse(children) as string
+      return
     }
-  }, [children, isUser])
+    contentRef.current.innerHTML = marked.parse(children) as string
+    // Skip diagram rendering while still streaming — a partial ```mermaid
+    // fence re-parses (and fails) on every incoming token; wait for the
+    // final, complete render instead of thrashing.
+    if (!streaming) {
+      renderDiagramsIn(contentRef.current)
+    }
+  }, [children, isUser, streaming])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start', marginBottom: 16 }}>

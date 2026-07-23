@@ -22,10 +22,12 @@ def db(tmp_path):
 
 
 @pytest.fixture()
-def home(tmp_path):
+def home(tmp_path, monkeypatch):
     h = tmp_path / "tawn_home"
     (h / "raw" / "agent-notes").mkdir(parents=True)
     (h / "wiki").mkdir()
+    # keep the real ~/.claude/projects out of this isolated compile run
+    monkeypatch.setenv("TAWN_AGENT_MEMORY_DIR", str(tmp_path / "claude-projects"))
     return h
 
 

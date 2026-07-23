@@ -153,10 +153,31 @@ code, pre { font-family: var(--tawn-font-mono); }
 .tawn-md th,.tawn-md td { border: 1px solid var(--tawn-line); padding: 5px 10px; text-align: left; }
 .tawn-md th { background: var(--tawn-raised); font-weight: 600; }
 
-/* data-theme overrides for explicit theme toggle */
-:root[data-theme="light"] { color-scheme: light; }
-:root[data-theme="dark"] { color-scheme: dark; }
+/* data-theme overrides for explicit theme toggle.
+ * Both blocks redeclare every token the @media(prefers-color-scheme) block
+ * above sets. A CSS custom property cascades per-declaration, not as a
+ * block — [data-theme="light"] setting only `color-scheme` would leave
+ * --tawn-bg etc. still resolving from the (same-specificity, later-in-file)
+ * dark media query on a system set to dark, so an explicit "light" pick
+ * would silently render dark. Redeclaring the values here gives the
+ * attribute selector's higher specificity something to actually win with,
+ * in both directions, regardless of OS preference. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --tawn-bg: #FAF7F1;
+  --tawn-surface: #FFFFFF;
+  --tawn-raised: #F3EEE3;
+  --tawn-line: #E7E0D2;
+  --tawn-line-strong: #D5CCB8;
+  --tawn-text: #33291C;
+  --tawn-text-2: #6B5F4B;
+  --tawn-text-3: #948A76;
+  --tawn-lapis: #2E5FA3;
+  --tawn-lapis-deep: #234A80;
+  --tawn-lapis-soft: #E5ECF6;
+}
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --tawn-bg: #191510;
   --tawn-surface: #221C14;
   --tawn-raised: #2B241A;

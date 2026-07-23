@@ -27,7 +27,10 @@ class AuditLog:
             return "genesis"
         return json.loads(lines[-1]).get("chain", "genesis")
 
-    def record(self, op: str, target: str, ok: bool, detail: str = "") -> None:
+    def record(self, op: str, target: str, ok: bool, detail: str = "", actor: str = "system") -> None:
+        """actor: who initiated this — "cli" | "web" | "chat" | "mcp" | "system"
+        (background jobs: auto-compiler, scheduled snapshots, federation watcher).
+        """
         prev_hash = self._last_hash()
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -35,6 +38,7 @@ class AuditLog:
             "target": target,
             "ok": ok,
             "detail": detail,
+            "actor": actor,
         }
         # chain hash = sha256 of prev_hash + this entry (without chain field)
         payload = prev_hash + json.dumps(entry, sort_keys=True)
@@ -73,7 +77,7 @@ class AuditLog:
 
     def export_csv(self) -> str:
         buf = io.StringIO()
-        fields = ["ts", "op", "target", "ok", "detail", "chain"]
+        fields = ["ts", "op", "target", "ok", "detail", "actor", "chain"]
         writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(self.entries())

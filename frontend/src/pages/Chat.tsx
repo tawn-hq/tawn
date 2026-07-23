@@ -9,6 +9,17 @@ import {
   getStatus, getChatModels, type ModelRow,
 } from '../lib/api'
 
+function useIsMobile() {
+  const [m, setM] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 639px)')
+    const h = (e: MediaQueryListEvent) => setM(e.matches)
+    mq.addEventListener('change', h)
+    return () => mq.removeEventListener('change', h)
+  }, [])
+  return m
+}
+
 // ── Slash commands ────────────────────────────────────────────────────────────
 
 interface SlashCmd {
@@ -85,11 +96,14 @@ function SessionRow({ s, isActive, onSelect }: { s: SessionMeta; isActive: boole
   )
 }
 
-function HistoryPanel({ sessions, activeId, onSelect, onNewChat }: { sessions: SessionMeta[]; activeId: string | null; onSelect: (id: string) => void; onNewChat: () => void }) {
+function HistoryPanel({ sessions, activeId, onSelect, onNewChat, onClose }: { sessions: SessionMeta[]; activeId: string | null; onSelect: (id: string) => void; onNewChat: () => void; onClose?: () => void }) {
   return (
-    <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid var(--tawn-line)', padding: '16px 12px', display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto', boxSizing: 'border-box' }}>
+    <div style={{ width: '100%', height: '100%', padding: '16px 12px', display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 4px 10px' }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--tawn-text-2)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>history</span>
+        {onClose && (
+          <button onClick={onClose} aria-label="close history" style={{ background: 'none', border: 'none', fontSize: 16, cursor: 'pointer', color: 'var(--tawn-text-3)', lineHeight: 1, padding: '2px 4px' }}>✕</button>
+        )}
       </div>
       <Button variant="secondary" size="sm" onClick={onNewChat} style={{ margin: '0 4px 10px', justifyContent: 'flex-start' }}>+ new chat</Button>
       {sessions.map((s) => (
@@ -97,6 +111,15 @@ function HistoryPanel({ sessions, activeId, onSelect, onNewChat }: { sessions: S
       ))}
       {sessions.length === 0 && <p style={{ fontSize: 12, color: 'var(--tawn-text-3)', padding: '0 4px' }}>no history yet</p>}
     </div>
+  )
+}
+
+/** History icon for the collapsed/closed toggle button. */
+function HistoryIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l4 2" />
+    </svg>
   )
 }
 
@@ -210,6 +233,8 @@ type PendingAction = { action: ChatAction; state: 'pending' | 'running' | 'appro
 
 export default function Chat() {
   const navigate = useNavigate()
+  const mobile = useIsMobile()
+  const [historyOpen, setHistoryOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 640)
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Msg[]>([])
@@ -260,6 +285,7 @@ export default function Chat() {
 
   async function loadSession(id: string) {
     setActiveId(id)
+    if (mobile) setHistoryOpen(false)
     try {
       const entries = await getHistorySession(id)
       setMessages(entries.map((e) => ({ role: e.role as 'user' | 'assistant', content: e.content, time: e.ts.slice(11, 16) })))
@@ -269,6 +295,7 @@ export default function Chat() {
   }
 
   function newChat() {
+    if (mobile) setHistoryOpen(false)
     setActiveId(null)
     setMessages([])
     setError(null)
@@ -561,11 +588,39 @@ export default function Chat() {
     <div style={{ background: 'var(--tawn-bg)', display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <AppNav />
       <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={handleFileChange} />
-      <div style={{ flex: 1, display: 'flex', minHeight: 0, maxWidth: 1040, width: '100%', margin: '0 auto' }}>
-        <HistoryPanel sessions={sessions} activeId={activeId} onSelect={loadSession} onNewChat={newChat} />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, padding: '16px 24px 0' }}>
-          <div style={{ fontSize: 12, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)', marginBottom: 8 }}>
-            {activeId ? `session ${activeId.slice(0, 8)}` : 'new chat'}
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, maxWidth: 1040, width: '100%', margin: '0 auto', position: 'relative' }}>
+        {/* Desktop: normal flex column that collapses to 0 width — panel
+            stays in the layout flow, nothing overlaps. Mobile: fixed overlay
+            with a backdrop, since there's no spare width to shift into. */}
+        {mobile ? (
+          historyOpen && (
+            <>
+              <div onClick={() => setHistoryOpen(false)} style={{ position: 'fixed', inset: 0, top: 56, background: 'rgba(0,0,0,0.4)', zIndex: 29 }} />
+              <div style={{ position: 'fixed', top: 56, bottom: 0, left: 0, width: 'min(280px, 84vw)', background: 'var(--tawn-bg)', borderRight: '1px solid var(--tawn-line)', zIndex: 30, boxShadow: '2px 0 16px rgba(0,0,0,0.15)' }}>
+                <HistoryPanel sessions={sessions} activeId={activeId} onSelect={loadSession} onNewChat={newChat} onClose={() => setHistoryOpen(false)} />
+              </div>
+            </>
+          )
+        ) : (
+          <div style={{ width: historyOpen ? 240 : 0, flexShrink: 0, overflow: 'hidden', borderRight: historyOpen ? '1px solid var(--tawn-line)' : 'none', transition: 'width 0.18s ease' }}>
+            <div style={{ width: 240 }}>
+              <HistoryPanel sessions={sessions} activeId={activeId} onSelect={loadSession} onNewChat={newChat} />
+            </div>
+          </div>
+        )}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, padding: mobile ? '12px 16px 0' : '16px 24px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <button
+              onClick={() => setHistoryOpen(!historyOpen)}
+              aria-label={historyOpen ? 'hide history' : 'show history'}
+              title={historyOpen ? 'hide history' : 'show history'}
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, flexShrink: 0, border: '1px solid var(--tawn-line)', borderRadius: 7, background: historyOpen ? 'var(--tawn-lapis-soft)' : 'var(--tawn-surface)', color: historyOpen ? 'var(--tawn-lapis)' : 'var(--tawn-text-2)', cursor: 'pointer' }}
+            >
+              <HistoryIcon />
+            </button>
+            <div style={{ fontSize: 12, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>
+              {activeId ? `session ${activeId.slice(0, 8)}` : 'new chat'}
+            </div>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {/* spacer pushes messages to bottom when chat is short */}

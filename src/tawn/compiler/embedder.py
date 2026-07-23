@@ -94,7 +94,7 @@ def _openai_embed(text: str) -> list[float]:
         raise EmbedError("no OPENAI_API_KEY")
     try:
         import openai
-        client = openai.OpenAI(api_key=api_key)
+        client = openai.OpenAI(api_key=api_key, timeout=20.0)
         resp = client.embeddings.create(model=_OPENAI_MODEL, input=text)
         return resp.data[0].embedding
     except Exception as exc:
@@ -115,7 +115,10 @@ def _gemini_embed(text: str) -> list[float]:
         from google import genai
         from google.genai import types as _gtypes
         # text-embedding-004 is a v1 (stable) model — v1beta returns 404
-        client = genai.Client(api_key=api_key, http_options={"api_version": "v1"})
+        # Explicit timeout: an unbounded default leaves a stalled TCP
+        # connection hanging forever instead of raising EmbedError, which
+        # is what the compiler's retry/backoff loop needs to see to move on.
+        client = genai.Client(api_key=api_key, http_options={"api_version": "v1", "timeout": 20_000})
         resp = client.models.embed_content(
             model=_GEMINI_MODEL,
             contents=text,
@@ -151,24 +154,41 @@ def embed_text(text: str, home: Path) -> list[float]:
     """Embed text using the configured model.
 
     On first call: auto-detects best available model and locks dims to config.
-    On subsequent calls: uses the locked model only.
+    On subsequent calls: uses the locked model, falling back to any other
+    chain entry that produces the SAME dims if the locked one fails — a
+    vector column has a fixed width, so a fallback with different dims
+    would just fail the insert; only dims-compatible fallbacks are safe.
     Raises EmbedError if no model available or dims mismatch.
     """
     locked_model, locked_dims = get_embed_config(home)
     chain = _chain()
 
     if locked_model:
+        last_err: EmbedError | None = None
+        locked_fn = None
+        fallbacks: list[tuple[str, object]] = []
         for model_name, dims, fn in chain:
             if model_name == locked_model:
+                locked_fn = fn
+            elif dims == locked_dims:
+                fallbacks.append((model_name, fn))
+        if locked_fn is None:
+            raise EmbedError(f"locked model {locked_model!r} not in embed chain")
+
+        for model_name, fn in [(locked_model, locked_fn)] + fallbacks:
+            try:
                 vec = fn(text)
-                if len(vec) != locked_dims:
-                    raise EmbedError(
-                        f"embed dims mismatch: config says {locked_dims} but "
-                        f"{model_name} returned {len(vec)}. "
-                        "Run: tawn compile --rebuild"
-                    )
-                return vec
-        raise EmbedError(f"locked model {locked_model!r} not in embed chain")
+            except EmbedError as e:
+                last_err = e
+                continue
+            if len(vec) != locked_dims:
+                raise EmbedError(
+                    f"embed dims mismatch: config says {locked_dims} but "
+                    f"{model_name} returned {len(vec)}. "
+                    "Run: tawn compile --rebuild"
+                )
+            return vec
+        raise EmbedError(f"{locked_model} and all dims-{locked_dims} fallbacks failed (last: {last_err})")
 
     # First use: walk fallback chain
     last_err: EmbedError | None = None

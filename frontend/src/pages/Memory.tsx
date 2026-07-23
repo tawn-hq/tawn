@@ -45,9 +45,16 @@ function ViewToggle({ view, setView }: { view: 'feed' | 'graph'; setView: (v: 'f
 }
 
 function SourceTypeBadge({ type }: { type: FeedChunk['source_type'] }) {
-  const map = { history: 'var(--tawn-lapis)', raw: 'var(--tawn-text-3)', external: 'var(--tawn-warn)' }
+  const map: Record<string, string> = {
+    'agent-memory': 'var(--tawn-lapis)',
+    history: 'var(--tawn-text-3)',
+    raw: 'var(--tawn-text-3)',
+    imports: 'var(--tawn-warn)',
+    external: 'var(--tawn-text-3)',
+  }
+  const color = map[type] || 'var(--tawn-text-3)'
   return (
-    <span style={{ fontSize: 10, fontFamily: 'var(--tawn-font-mono)', border: `1px solid ${map[type]}`, color: map[type], borderRadius: 999, padding: '1px 6px' }}>{type}</span>
+    <span style={{ fontSize: 10, fontFamily: 'var(--tawn-font-mono)', border: `1px solid ${color}`, color, borderRadius: 999, padding: '1px 6px' }}>{type}</span>
   )
 }
 
@@ -122,6 +129,7 @@ export default function Memory() {
   const [query, setQuery] = useState('')
   const [view, setView] = useState<'feed' | 'graph'>('feed')
   const [domainFilter, setDomainFilter] = useState<string>('')
+  const [sourceTypeFilter, setSourceTypeFilter] = useState<string>('knowledge')
   const [result, setResult] = useState<RecallResult | null>(null)
   const [recallStatus, setRecallStatus] = useState('')
   const [noteText, setNoteText] = useState('')
@@ -136,15 +144,15 @@ export default function Memory() {
   const fileRef = useRef<HTMLInputElement>(null)
   const LIMIT = 20
 
-  function loadFeed(offset = 0, domain = domainFilter) {
+  function loadFeed(offset = 0, domain = domainFilter, srcType = sourceTypeFilter) {
     setFeedLoading(true)
-    getChunks({ domain: domain || undefined, limit: LIMIT, offset })
+    getChunks({ domain: domain || undefined, source_type: srcType || undefined, limit: LIMIT, offset })
       .then((page) => { setFeedChunks(page.chunks); setFeedTotal(page.total); setFeedOffset(offset) })
       .catch(() => {})
       .finally(() => setFeedLoading(false))
   }
 
-  useEffect(() => { loadFeed(0, domainFilter) }, [domainFilter])
+  useEffect(() => { loadFeed(0, domainFilter, sourceTypeFilter) }, [domainFilter, sourceTypeFilter])
 
   async function handleRecall(e: FormEvent) {
     e.preventDefault()
@@ -209,14 +217,25 @@ export default function Memory() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <ViewToggle view={view} setView={setView} />
             {!hasResult && view === 'feed' && (
-              <select
-                value={domainFilter}
-                onChange={(e) => setDomainFilter(e.target.value)}
-                style={{ fontSize: 12, fontFamily: 'var(--tawn-font-mono)', padding: '5px 8px', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-raised)', color: 'var(--tawn-text)' }}
-              >
-                <option value="">all domains</option>
-                {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
+              <>
+                <select
+                  value={sourceTypeFilter}
+                  onChange={(e) => setSourceTypeFilter(e.target.value)}
+                  style={{ fontSize: 12, fontFamily: 'var(--tawn-font-mono)', padding: '5px 8px', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-raised)', color: 'var(--tawn-text)' }}
+                >
+                  <option value="knowledge">knowledge</option>
+                  <option value="all">all</option>
+                  <option value="imports">imports</option>
+                </select>
+                <select
+                  value={domainFilter}
+                  onChange={(e) => setDomainFilter(e.target.value)}
+                  style={{ fontSize: 12, fontFamily: 'var(--tawn-font-mono)', padding: '5px 8px', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-raised)', color: 'var(--tawn-text)' }}
+                >
+                  <option value="">all domains</option>
+                  {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </>
             )}
           </div>
           {recallStatus && <span style={{ fontSize: 11, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>{recallStatus}</span>}

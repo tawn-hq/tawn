@@ -46,7 +46,9 @@ def _storable_embedding(vec: list[float] | None) -> list[float] | None:
     """Return None on SQLite (Text column can't store vectors)."""
     if vec is None:
         return None
-    if "postgresql" not in os.environ.get("TAWN_DB_URL", ""):
+    from tawn.config import settings as _settings
+    db_url = os.environ.get("TAWN_DB_URL") or _settings().db_url
+    if "postgresql" not in db_url:
         return None
     return vec
 
@@ -154,7 +156,8 @@ def run_compile(
             if hist_dir.exists():
                 delta_files_new += list(hist_dir.glob("*.jsonl"))
             # agent memory: Claude Code project memory files
-            _claude_projects = Path.home() / ".claude" / "projects"
+            from tawn.home import agent_memory_root
+            _claude_projects = agent_memory_root()
             if _claude_projects.exists():
                 _text_exts2 = {".md", ".txt", ".rst"}
                 for _mem_dir in _claude_projects.glob("*/memory"):
@@ -183,17 +186,23 @@ def run_compile(
         raw_str = str(raw_dir)
         hist_str = str(home / "history")
         all_chunks: list[ParsedChunk] = []
+        from tawn.home import agent_memory_root
+        agent_mem_prefix = str(agent_memory_root())
         for path in files_to_process:
             try:
                 path_str = str(path)
                 # classify domain for files outside raw/ (i.e. granted paths + history)
                 inferred_domain: str | None = None
                 if not path_str.startswith(raw_str) and not path_str.startswith(hist_str):
-                    try:
-                        content_preview = path.read_text(encoding="utf-8", errors="replace")[:2000]
-                        inferred_domain = classify(path, content_preview)
-                    except Exception:
-                        pass
+                    if path_str.startswith(agent_mem_prefix) and "/memory/" in path_str:
+                        # Agent memory files are always work-domain project context
+                        inferred_domain = "work"
+                    else:
+                        try:
+                            content_preview = path.read_text(encoding="utf-8", errors="replace")[:2000]
+                            inferred_domain = classify(path, content_preview)
+                        except Exception:
+                            pass
                 chunks = parse_file(path, domain=inferred_domain)
                 # for history chunks: run classifier on content for domain
                 if path_str.startswith(hist_str):
@@ -215,7 +224,7 @@ def run_compile(
         raw_str_prefix = str(raw_dir)
         import_str = str(raw_dir / "imports")
         hist_prefix = str(home / "history")
-        agent_mem_prefix = str(Path.home() / ".claude" / "projects")
+        agent_mem_prefix = str(agent_memory_root())
         structured_chunks = [
             c for c in resolved_chunks
             if (c.source_path.startswith(raw_str_prefix)
@@ -243,15 +252,37 @@ def run_compile(
 
         chunks_added = 0
         embed_available = True
+        # A provider has never been confirmed working (embed_dims never
+        # locked in config.yaml) → the very first failure means "no provider
+        # configured at all" (missing key / no Ollama model), which fails
+        # identically every time — one attempt, then stop for the rest of
+        # the run. Once a provider IS confirmed (dims locked from a past
+        # successful compile), failures are far more likely a transient
+        # network blip, so those get retried with backoff instead of
+        # poisoning the whole remaining batch on one bad connection.
+        from tawn.compiler.embedder import get_embed_config as _get_embed_config
+        _, _locked_dims = _get_embed_config(home)
+        _provider_confirmed = _locked_dims > 0
+        _EMBED_RETRIES = 3 if _provider_confirmed else 1
+        _EMBED_BACKOFF_S = 2.0
         now = datetime.datetime.utcnow()
         _BATCH = 200
         for i, parsed in enumerate(resolved_chunks):
             embedding: list[float] | None = None
             if embed_available:
-                try:
-                    embedding = embed_text(parsed.content, home)
-                except EmbedError:
-                    embed_available = False
+                for attempt in range(_EMBED_RETRIES):
+                    try:
+                        embedding = embed_text(parsed.content, home)
+                        if not _provider_confirmed:
+                            _provider_confirmed = True
+                            _EMBED_RETRIES = 3
+                        break
+                    except EmbedError:
+                        if attempt < _EMBED_RETRIES - 1:
+                            time.sleep(_EMBED_BACKOFF_S * (2 ** attempt))
+                else:
+                    if not _provider_confirmed:
+                        embed_available = False
 
             safe_content = parsed.content.replace("\x00", "")
             existing = existing_chunks.get((parsed.source_path, parsed.chunk_index))
@@ -282,9 +313,15 @@ def run_compile(
                 ))
                 chunks_added += 1
 
-            # Flush in batches to release memory pressure without a full commit
+            # Commit in batches — not just flush. Each chunk here can involve
+            # a real, slow, network-dependent embed call; a single-transaction
+            # whole-run commit means one bad connection anywhere in a
+            # multi-thousand-chunk run holds *everything* processed so far
+            # hostage (invisible to any other session, and lost entirely if
+            # the process is killed). Committing periodically makes embedded
+            # chunks durable and searchable as they land, not all-or-nothing.
             if (i + 1) % _BATCH == 0:
-                session.flush()
+                session.commit()
 
         # Remove chunks for deleted files
         chunks_removed = 0

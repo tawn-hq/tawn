@@ -3,9 +3,10 @@ import pytest
 
 @pytest.fixture
 def tawn_home(tmp_path, monkeypatch):
-    """Isolated Tawn home; no test may touch the real ~/.tawn."""
+    """Isolated Tawn home; no test may touch the real ~/.tawn or ~/.claude/projects."""
     home = tmp_path / "tawn-home"
     monkeypatch.setenv("TAWN_HOME", str(home))
+    monkeypatch.setenv("TAWN_AGENT_MEMORY_DIR", str(tmp_path / "claude-projects"))
     return home
 
 

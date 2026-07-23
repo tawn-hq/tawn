@@ -88,7 +88,10 @@ def take_snapshot(
     with session(engine) as s:
         s.add(Snapshot(domain="wealth", asof=asof, state_json=json.dumps(state)))
         s.commit()
-    audit.record("wealth.snapshot", "snapshots", ok=True, detail=f"total={state['total_ngn']}")
+    # Always runs via `tawn wealth snapshot` — invoked directly or by the
+    # systemd timer running that same CLI command — so "cli" is accurate
+    # either way; there's no separate non-CLI code path into this function.
+    audit.record("wealth.snapshot", "snapshots", ok=True, detail=f"total={state['total_ngn']}", actor="cli")
     return state
 
 

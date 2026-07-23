@@ -10,9 +10,11 @@ import yaml
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from fastapi import HTTPException
+
 from tawn.capability.audit import AuditLog
 from tawn.capability.grants import load_verified
-from tawn.capability.integrity import confirm as integrity_confirm
+from tawn.capability.integrity import IntegrityError, confirm as integrity_confirm
 from tawn.home import tawn_home
 
 router = APIRouter()
@@ -24,7 +26,13 @@ def get_grants():
     grants_path = home / "grants.yaml"
     if not grants_path.exists():
         return {"read": [], "write": [], "observe": [], "system": False, "mcp": []}
-    g = load_verified(grants_path)
+    try:
+        g = load_verified(grants_path)
+    except IntegrityError as exc:
+        # grants.yaml was written by something that skipped the confirm
+        # step (a hand edit, or a bug in another writer) — surface it as a
+        # clean, actionable error instead of an unhandled 500.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "read": [str(p) for p in g.read],
         "write": [str(p) for p in g.write],
@@ -32,6 +40,20 @@ def get_grants():
         "system": g.system,
         "mcp": g.mcp,
     }
+
+
+@router.post("/grants/confirm")
+def confirm_grants():
+    """Re-confirm grants.yaml's integrity sidecar after a hand edit (or a
+    writer that skipped confirming, like the chat grant-action bug this
+    fixes). Mirrors `tawn grant confirm` — accept the current file as-is."""
+    home = tawn_home()
+    grants_path = home / "grants.yaml"
+    if not grants_path.exists():
+        return {"ok": False, "error": "grants.yaml does not exist"}
+    digest = integrity_confirm(grants_path)
+    AuditLog(home / "audit.log").record("grant.confirm (web)", str(grants_path), ok=True, detail=digest, actor="web")
+    return {"ok": True, "digest": digest}
 
 
 class GrantsBody(BaseModel):
@@ -56,7 +78,7 @@ def put_grants(body: GrantsBody):
     }
     path.write_text(yaml.safe_dump(data, sort_keys=False))
     digest = integrity_confirm(path)
-    AuditLog(home / "audit.log").record("grant.edit (web)", str(path), ok=True, detail=digest)
+    AuditLog(home / "audit.log").record("grant.edit (web)", str(path), ok=True, detail=digest, actor="web")
     return {"ok": True, "digest": digest}
 
 

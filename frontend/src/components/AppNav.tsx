@@ -1,4 +1,4 @@
-import { NavBar } from '../ds'
+import { NavBar, ThemeToggle } from '../ds'
 
 const APP_LINKS = [
   { label: 'dashboard', to: '/dashboard' },
@@ -9,5 +9,5 @@ const APP_LINKS = [
 ]
 
 export default function AppNav() {
-  return <NavBar links={APP_LINKS} showStatus />
+  return <NavBar links={APP_LINKS} showStatus right={<ThemeToggle />} />
 }

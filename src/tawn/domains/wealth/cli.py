@@ -97,7 +97,7 @@ def wealth_schedule(
         typer.echo(f"wrote {f}")
     ok, msg = enable_timer()
     AuditLog(tawn_home() / "audit.log").record(
-        "wealth.schedule", f"OnCalendar={every}", ok=ok, detail=msg
+        "wealth.schedule", f"OnCalendar={every}", ok=ok, detail=msg, actor="cli"
     )
     if not ok:
         typer.echo(f"timer not enabled: {msg}", err=True)

@@ -16,6 +16,9 @@ postgres server not reachable. Install and start it, then re-run:
   Ubuntu/Debian:  sudo apt install -y postgresql && sudo systemctl enable --now postgresql
   Fedora:         sudo dnf install -y postgresql-server && sudo postgresql-setup --initdb && sudo systemctl enable --now postgresql
   macOS (brew):   brew install postgresql@16 && brew services start postgresql@16
+  Windows:        install from postgresql.org/download/windows, set a password for
+                   the postgres user, then set TAWN_DB_URL to match — e.g.
+                   postgresql+psycopg://postgres:yourpassword@localhost/tawn
 """
 
 

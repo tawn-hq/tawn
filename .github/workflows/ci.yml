@@ -29,7 +29,11 @@ jobs:
           --health-retries 5
 
     env:
-      TAWN_DB_URL: postgresql://tawn:tawn@localhost:5432/tawn_test
+      # +psycopg (psycopg3) matches the project's actual driver dependency
+      # (psycopg[binary]) — the plain postgresql:// scheme defaults
+      # SQLAlchemy to psycopg2, which isn't installed and raises
+      # ModuleNotFoundError the moment anything builds a real engine from it.
+      TAWN_DB_URL: postgresql+psycopg://tawn:tawn@localhost:5432/tawn_test
 
     steps:
       - uses: actions/checkout@v4

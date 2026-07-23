@@ -16,6 +16,11 @@ from tawn.federation.schema import FederationRecord
 
 _UTC = datetime.timezone.utc
 
+# Above this, skip during the bulk startup scan — real chat session exports
+# are small text; multi-MB files under a source dir are tool-output logs,
+# binaries, or other noise that isn't worth the read cost at boot time.
+_MAX_SCAN_FILE_BYTES = 2_000_000
+
 # Fallback ignore set (used before home is resolved)
 _IGNORE_DIRS: frozenset[str] = frozenset({
     "node_modules", ".venv", "venv", "vevn", "env", ".env",
@@ -88,6 +93,16 @@ def scan_all_sources(home: Path, session: Session) -> int:
             # Skip memory/ subdirectories inside Claude Code project dirs
             if "memory" in path.parts:
                 continue
+            # Adapter can_handle() checks read the whole file into memory —
+            # a source dir can hold multi-MB tool-output logs or (as with
+            # ~/.gemini/tmp/) stray binaries alongside real session files.
+            # Without a cap, one such directory makes this startup-blocking
+            # scan take minutes and the web server never binds its port.
+            try:
+                if path.stat().st_size > _MAX_SCAN_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
             adapter = dispatch(path)
             if adapter is None:
                 continue
@@ -98,8 +113,13 @@ def scan_all_sources(home: Path, session: Session) -> int:
     return ingested
 
 
-def merge_pending(home: Path, session: Session) -> dict:
-    """Process all pending FederationRecord rows. Returns counts dict."""
+def merge_pending(home: Path, session: Session, actor: str = "system") -> dict:
+    """Process all pending FederationRecord rows. Returns counts dict.
+
+    actor: who triggered this — "cli" | "web" | "chat" | "system" (the
+    background auto-compiler thread). Centralized here (rather than at each
+    of the three call sites) so every caller gets an audit entry uniformly.
+    """
     records = session.query(FederationRecord).filter_by(status="pending").all()
     merged = failed = skipped = 0
 
@@ -141,5 +161,12 @@ def merge_pending(home: Path, session: Session) -> dict:
 
     if merged > 0:
         request_compile(home)
+
+    if merged > 0 or failed > 0:
+        from tawn.capability.audit import AuditLog
+        AuditLog(home / "audit.log").record(
+            "federation.merge", "pending records", ok=(failed == 0),
+            detail=f"merged={merged} failed={failed} skipped={skipped}", actor=actor,
+        )
 
     return {"merged": merged, "failed": failed, "skipped": skipped}

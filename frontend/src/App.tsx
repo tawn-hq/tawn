@@ -10,6 +10,7 @@ import DomainCreate from './pages/DomainCreate'
 import DomainPage from './pages/DomainPage'
 import Logs from './pages/Logs'
 import MemoryDetail from './pages/MemoryDetail'
+import AgentConversation from './pages/AgentConversation'
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
       <Route path="/domain/create" element={<DomainCreate />} />
       <Route path="/domain/:name" element={<DomainPage />} />
       <Route path="/memory/chunk/:id" element={<MemoryDetail />} />
+      <Route path="/agents/conversation/:id" element={<AgentConversation />} />
       <Route path="/audit" element={<Navigate to="/settings" replace />} />
       <Route path="/logs" element={<Logs />} />
       <Route path="/grants" element={<Navigate to="/settings" replace />} />
