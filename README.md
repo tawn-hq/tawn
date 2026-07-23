@@ -4,6 +4,8 @@
 > A local-first, agent-agnostic context core for one person's work, wealth, research, and academic life. The name is deliberate: **taw** (ת) — *the mark, the bookend, the twin* — the last letter of the Semitic abjad answering aleph's first, and the user's own initial (T); **+ own** — your data, your machine, your intelligence, owned by you. *taw / two / twin*, and now yours.
 >
 > **This file is the canonical instruction surface.** Any agent (Claude Code, Antigravity, Gemini CLI, Cursor, Cline, Codex) that reads `AGENTS.md` should read *this*. It is portable by design: no agent owns it, every agent uses it.
+>
+> **Humans installing Tawn:** see [`INSTALL.md`](INSTALL.md).
 
 ---
 
@@ -111,6 +113,8 @@ This is what makes Tawn *yours* and not just another assistant. It unifies **Obs
 │   ├── adapters/           # per-agent read/write mappers
 │   └── AGENTS.canonical.md # the master instruction surface (this file's runtime twin)
 ├── config.yaml             # accounts, vault path, model routing (git-ignored)
+├── grants.yaml             # capability grants — deny-all default (git-ignored, integrity-checked)
+├── grants.yaml.sha256      # integrity sidecar; refresh via `tawn grant confirm`
 └── audit.log               # every write + every cross-domain action
 ```
 
@@ -269,7 +273,7 @@ Because these are MCP tools and the instructions live in `AGENTS.md`, the **same
 
 | Stage | Ship | Effort |
 |---|---|---|
-| **0 · today** | `~/.tawn/` skeleton + `config.yaml` + this `Tawn.md` as canonical `AGENTS.md`; symlink/copy into Claude Code, Antigravity, Cursor | hours |
+| **0 · shipped** | `~/.tawn/` skeleton + deny-all `grants.yaml` (integrity-checked) + FS-mediation layer + audit log + `tawn init` / `tawn grant` CLI | done |
 | **1** | Wealth v0: aggregator → `core.db` snapshots → local dashboard + Ollama analyst (read-only) | weekend |
 | **2** | Memory core: Obsidian live sync + `wiki/` compile + vectors + entity graph | 1–2 wks |
 | **3** | Federation loop: ingest agent memories + cloud-export inbox + project canonical out | 1–2 wks |

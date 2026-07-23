@@ -1,0 +1,12 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- Tawn glyph · CAIRN · small-size / avatar master
+       Sandstone-night ground baked in; mark at ~61% of circle height.
+       Export targets: 512 Telegram bot avatar, 192/180 PWA + touch icon,
+       32/16 favicon. Never photo grounds, never gradients. -->
+  <circle cx="256" cy="256" r="256" fill="#191510"/>
+  <g transform="translate(-64,-127.75) scale(2.5)">
+    <ellipse cx="128" cy="192" rx="62" ry="24" fill="#EFE9DC"/>
+    <ellipse cx="128" cy="148" rx="45" ry="21" fill="#EFE9DC"/>
+    <ellipse cx="128" cy="108" rx="27" ry="17" fill="#4A7BC8"/>
+  </g>
+</svg>

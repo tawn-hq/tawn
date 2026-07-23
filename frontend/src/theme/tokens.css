@@ -1,0 +1,192 @@
+/* tawn design tokens — v3 · Sandstone & Lapis · DS handoff 2026-07-22
+ * Identity: CAIRN mark (three stones, lapis capstone).
+ * Palette story: humanity's first permanent records — marks on sandstone,
+ * written in lapis, the pigment once worth more than gold.
+ * One token file, three surfaces: web viewer CSS reads it directly; the
+ * Rich/Textual CLI theme and Telegram asset generation map the same names.
+ */
+:root {
+  /* ground — warm mineral neutrals */
+  --tawn-bg: #FAF7F1;         /* sandstone — page ground */
+  --tawn-surface: #FFFFFF;
+  --tawn-raised: #F3EEE3;     /* raised surface */
+  --tawn-line: #E7E0D2;       /* borders, rules */
+  --tawn-line-strong: #D5CCB8;
+
+  /* ink */
+  --tawn-text: #33291C;       /* ink — text, mark stones */
+  --tawn-text-2: #6B5F4B;     /* secondary text */
+  --tawn-text-3: #948A76;
+
+  /* accent — lapis. Scarce by rule: the capstone, the focused entity,
+     the prompt, the primary action. Never a status color. */
+  --tawn-lapis-soft: #E5ECF6; /* tint, highlights, row hover */
+  --tawn-lapis-bright: #4A7BC8; /* capstone + accent on dark grounds */
+  --tawn-lapis: #2E5FA3;      /* accent + accent text on light (AA) */
+  --tawn-lapis-deep: #234A80; /* hover / active on light */
+
+  /* domains — tag, never flood. Chips, graph-node colors, 12% tints.
+     Lapis stays pure accent, so work wears kiln clay instead of blue. */
+  --tawn-work: #9C5B33;       /* kiln — clay, the maker's domain */
+  --tawn-wealth: #3F8E62;     /* jade — read-only money */
+  --tawn-research: #8A63D2;   /* violet */
+  --tawn-academic: #C2536B;   /* madder */
+
+  /* semantic — status only. warn is the staleness contract:
+     every fact past TTL renders with it. */
+  --tawn-good: #3F8E62;       /* fresh, local, passing */
+  --tawn-warn: #B9741F;       /* stale facts, parked ops */
+  --tawn-crit: #BF4040;       /* failures, gate refusals */
+  --tawn-info: #2E5FA3;       /* notices (shares lapis) */
+
+  /* type */
+  --tawn-font-display: "General Sans", "Segoe UI Variable Display", system-ui, sans-serif;
+  --tawn-font-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --tawn-font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* sandstone night */
+    --tawn-bg: #191510;
+    --tawn-surface: #221C14;
+    --tawn-raised: #2B241A;
+    --tawn-line: #383021;
+    --tawn-line-strong: #4A4030;
+    --tawn-text: #EFE9DC;      /* bone */
+    --tawn-text-2: #ADA28C;
+    --tawn-text-3: #7A7160;
+    --tawn-lapis: #4A7BC8;     /* bright lapis passes as text on dark */
+    --tawn-lapis-deep: #6E97D6;
+    --tawn-lapis-soft: #1C2536;
+  }
+}
+
+/* ── Frontend compat aliases + layout utilities ─────────────────────────
+   These map the --tawn-* brand tokens onto the shorthand names used
+   throughout the web components, plus layout/size tokens not in the
+   canonical brand file. Re-copy brand/tokens.css here after brand updates,
+   then restore this block. */
+:root {
+  --bg: var(--tawn-bg);
+  --bg-raised: var(--tawn-raised);
+  --text: var(--tawn-text);
+  --text-muted: var(--tawn-text-2);
+  --border: var(--tawn-line);
+  --lapis: var(--tawn-lapis);
+  --lapis-dim: var(--tawn-lapis-bright);
+  --amber: var(--tawn-warn);
+  --error: var(--tawn-crit);
+  --success: var(--tawn-good);
+  --font: var(--tawn-font-body);
+  --font-mono: var(--tawn-font-mono);
+  --r: 10px;
+  --r-sm: 6px;
+  --sz-sm: 13px;
+  --sz-base: 15px;
+  --sz-xl: 28px;
+}
+
+/* ── Type scale ─────────────────────────────────────────────────────────── */
+:root {
+  --tawn-sz-xs: 11px;
+  --tawn-sz-sm: 13px;
+  --tawn-sz-base: 15px;
+  --tawn-sz-lg: 18px;
+  --tawn-sz-xl: 24px;
+  --tawn-sz-2xl: 28px;
+  --tawn-lh-tight: 1.3;
+  --tawn-lh-body: 1.55;
+  --tawn-tracking-tight: -0.03em;
+  --tawn-tracking-wide: 0.08em;
+}
+
+/* ── Spacing scale ──────────────────────────────────────────────────────── */
+:root {
+  --tawn-space-1: 4px;
+  --tawn-space-2: 6px;
+  --tawn-space-3: 8px;
+  --tawn-space-4: 12px;
+  --tawn-space-5: 16px;
+  --tawn-space-6: 20px;
+  --tawn-space-7: 24px;
+  --tawn-space-8: 32px;
+  --tawn-space-9: 48px;
+  --tawn-radius-sm: 6px;
+  --tawn-radius: 10px;
+  --tawn-radius-lg: 14px;
+}
+
+/* reset */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { color-scheme: light dark; }
+body {
+  background: var(--tawn-bg);
+  color: var(--tawn-text);
+  font-family: var(--tawn-font-body);
+  font-size: var(--tawn-sz-base);
+  line-height: var(--tawn-lh-body);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--tawn-lapis); text-decoration: none; }
+a:hover { color: var(--tawn-lapis-deep); text-decoration: underline; }
+code, pre { font-family: var(--tawn-font-mono); }
+
+/* markdown rendered in chat bubbles */
+.tawn-md p { margin: 0 0 0.65em; }
+.tawn-md p:last-child { margin-bottom: 0; }
+.tawn-md h1,.tawn-md h2,.tawn-md h3,.tawn-md h4 { font-weight: 700; margin: 0.8em 0 0.3em; line-height: 1.3; }
+.tawn-md h1 { font-size: 1.2em; }
+.tawn-md h2 { font-size: 1.1em; }
+.tawn-md h3 { font-size: 1em; }
+.tawn-md ul,.tawn-md ol { padding-left: 1.4em; margin: 0.4em 0 0.65em; }
+.tawn-md li { margin-bottom: 0.25em; }
+.tawn-md code { font-family: var(--tawn-font-mono); font-size: 0.875em; background: var(--tawn-raised); border: 1px solid var(--tawn-line); border-radius: 4px; padding: 1px 5px; }
+.tawn-md pre { background: var(--tawn-raised); border: 1px solid var(--tawn-line); border-radius: var(--tawn-radius-sm); padding: 10px 12px; overflow-x: auto; margin: 0.6em 0; }
+.tawn-md pre code { background: none; border: none; padding: 0; font-size: 0.82em; }
+.tawn-md blockquote { border-left: 3px solid var(--tawn-lapis); margin: 0.5em 0; padding: 4px 12px; color: var(--tawn-text-2); }
+.tawn-md strong { font-weight: 700; }
+.tawn-md em { font-style: italic; }
+.tawn-md a { color: var(--tawn-lapis); }
+.tawn-md hr { border: none; border-top: 1px solid var(--tawn-line); margin: 0.8em 0; }
+.tawn-md table { border-collapse: collapse; width: 100%; font-size: 0.9em; margin: 0.6em 0; }
+.tawn-md th,.tawn-md td { border: 1px solid var(--tawn-line); padding: 5px 10px; text-align: left; }
+.tawn-md th { background: var(--tawn-raised); font-weight: 600; }
+
+/* data-theme overrides for explicit theme toggle.
+ * Both blocks redeclare every token the @media(prefers-color-scheme) block
+ * above sets. A CSS custom property cascades per-declaration, not as a
+ * block — [data-theme="light"] setting only `color-scheme` would leave
+ * --tawn-bg etc. still resolving from the (same-specificity, later-in-file)
+ * dark media query on a system set to dark, so an explicit "light" pick
+ * would silently render dark. Redeclaring the values here gives the
+ * attribute selector's higher specificity something to actually win with,
+ * in both directions, regardless of OS preference. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --tawn-bg: #FAF7F1;
+  --tawn-surface: #FFFFFF;
+  --tawn-raised: #F3EEE3;
+  --tawn-line: #E7E0D2;
+  --tawn-line-strong: #D5CCB8;
+  --tawn-text: #33291C;
+  --tawn-text-2: #6B5F4B;
+  --tawn-text-3: #948A76;
+  --tawn-lapis: #2E5FA3;
+  --tawn-lapis-deep: #234A80;
+  --tawn-lapis-soft: #E5ECF6;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --tawn-bg: #191510;
+  --tawn-surface: #221C14;
+  --tawn-raised: #2B241A;
+  --tawn-line: #383021;
+  --tawn-line-strong: #4A4030;
+  --tawn-text: #EFE9DC;
+  --tawn-text-2: #ADA28C;
+  --tawn-text-3: #7A7160;
+  --tawn-lapis: #4A7BC8;
+  --tawn-lapis-deep: #6E97D6;
+  --tawn-lapis-soft: #1C2536;
+}

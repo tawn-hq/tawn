@@ -1,0 +1,10 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- Tawn primary mark · CAIRN · light ground
+       Three stones stacked by your own hand so future-you stays found.
+       taw = "the mark"; the lapis capstone is the newest mark.
+       Ink stones on light grounds; capstone always lapis.
+       Use ≥48px. Below 48px use tawn-glyph.svg (avatar/favicon master). -->
+  <ellipse cx="128" cy="192" rx="62" ry="24" fill="#33291C"/>
+  <ellipse cx="128" cy="148" rx="45" ry="21" fill="#33291C"/>
+  <ellipse cx="128" cy="108" rx="27" ry="17" fill="#2E5FA3"/>
+</svg>

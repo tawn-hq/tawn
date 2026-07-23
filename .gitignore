@@ -14,8 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -216,4 +216,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# gitignore has no trailing comments — pattern must stand alone
 docs/
+
+# tawn runtime state — never in git (PRD §8)
+config.yaml
+grants.yaml
+grants.yaml.sha256
+*.egg-info/
+.venv/
+
+# Node.js / frontend (frontend/) — never had a rule; node_modules leaked
+# into `git status` as thousands of untracked files. (frontend/dist/ is
+# already covered by the unanchored dist/ rule above.)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

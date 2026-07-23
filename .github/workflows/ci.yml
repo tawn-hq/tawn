@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: tawn
+          POSTGRES_PASSWORD: tawn
+          POSTGRES_DB: tawn_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # +psycopg (psycopg3) matches the project's actual driver dependency
+      # (psycopg[binary]) — the plain postgresql:// scheme defaults
+      # SQLAlchemy to psycopg2, which isn't installed and raises
+      # ModuleNotFoundError the moment anything builds a real engine from it.
+      TAWN_DB_URL: postgresql+psycopg://tawn:tawn@localhost:5432/tawn_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev,providers,vectors,mcp]"
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Run tests
+        run: pytest --tb=short -q
