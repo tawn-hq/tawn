@@ -172,7 +172,7 @@ def run_compile(
         else:
             from tawn.compiler.delta import DeltaResult, scan_agent_memory
             raw_delta = scan_raw(raw_dir, session)
-            granted_delta = scan_granted(granted_read, session)
+            granted_delta = scan_granted(granted_read, session, home=home)
             history_delta = scan_history(home, session)
             agent_mem_delta = scan_agent_memory(session)
             delta_files_new = raw_delta.new + granted_delta.new + history_delta.new + agent_mem_delta.new
