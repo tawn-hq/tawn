@@ -232,7 +232,7 @@ def _start_ngrok(port: int) -> str | None:
             ["ngrok", "http", str(port)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            **_detached_popen_kwargs(),
         )
         # poll until tunnel appears (up to 10s)
         for i in range(20):
@@ -286,20 +286,49 @@ def _web_port_file(home: Path) -> Path:
     return home / "web.port"
 
 
+def _pid_exists(pid: int) -> bool:
+    """Existence-only check — must never have a side effect on the process.
+
+    On POSIX, `os.kill(pid, 0)` is the documented safe way to do this: signal
+    0 sends nothing, the kernel only validates the pid (a PermissionError
+    means it exists but is owned by another user — still "running" from our
+    perspective). On Windows, os.kill has no such special case — passing 0
+    there calls TerminateProcess(), i.e. an "is it running?" check would
+    actually kill the server on every `tawn web status`. Windows needs a
+    real existence query instead (OpenProcess succeeds iff the pid is live).
+    """
+    if platform.system() == "Windows":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _web_is_running(home: Path) -> tuple[bool, int]:
     """Returns (is_running, pid). pid=0 if not running."""
-    import os
-
     pid_file = _web_pid_file(home)
     if not pid_file.exists():
         return False, 0
     try:
         pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)  # signal 0: existence/permission check only, no-op otherwise
-        return True, pid
-    except (ValueError, ProcessLookupError, PermissionError):
+    except ValueError:
         pid_file.unlink(missing_ok=True)
         return False, 0
+    if _pid_exists(pid):
+        return True, pid
+    pid_file.unlink(missing_ok=True)
+    return False, 0
 
 
 def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
@@ -311,9 +340,27 @@ def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def _pid_holding_port(port: int) -> int | None:
-    """Best-effort lookup of the PID bound to a port. Linux/macOS only; None elsewhere."""
+    """Best-effort lookup of the PID bound to a port."""
     import shutil
     import subprocess
+
+    if platform.system() == "Windows":
+        try:
+            # `netstat -ano` has no per-port filter, so grep the LISTENING
+            # line for this port ourselves; last column is the owning PID.
+            out = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True, timeout=3,
+            ).stdout
+            for line in out.splitlines():
+                if "LISTENING" not in line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 5 and parts[1].rsplit(":", 1)[-1] == str(port):
+                    return int(parts[-1])
+        except Exception:
+            pass
+        return None
 
     if shutil.which("lsof"):
         try:
@@ -338,6 +385,20 @@ def _pid_holding_port(port: int) -> int | None:
         except Exception:
             pass
     return None
+
+
+def _detached_popen_kwargs() -> dict:
+    """Platform-specific kwargs to fully detach a spawned subprocess.
+
+    `start_new_session` (setsid) is POSIX-only — passing it on Windows
+    raises. `CREATE_NEW_PROCESS_GROUP` + `DETACHED_PROCESS` is the Windows
+    equivalent: new process group (so the child doesn't receive Ctrl+C
+    meant for the parent console) and no inherited console at all.
+    """
+    if platform.system() == "Windows":
+        import subprocess as _sp
+        return {"creationflags": _sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS}
+    return {"start_new_session": True}
 
 
 web_app = typer.Typer(no_args_is_help=True, help="Web viewer daemon (start/stop/status).")
@@ -400,8 +461,8 @@ def web_start(
         [sys.executable, "-m", "tawn._webserver", str(port)],
         stdout=log_fh,
         stderr=log_fh,
-        start_new_session=True,
         close_fds=True,
+        **_detached_popen_kwargs(),
     )
     _web_pid_file(home).write_text(str(proc.pid))
     _web_port_file(home).write_text(str(port))
@@ -465,7 +526,10 @@ def web_stop() -> None:
         _web_pid_file(home).unlink(missing_ok=True)
         _web_port_file(home).unlink(missing_ok=True)
         typer.echo(f"stopped (pid {pid})")
-    except ProcessLookupError:
+    except OSError:
+        # ProcessLookupError (POSIX) covers "already gone" cleanly; Windows'
+        # os.kill raises a plain OSError from GetLastError() instead of
+        # necessarily mapping to that specific subclass, so catch broadly.
         _web_pid_file(home).unlink(missing_ok=True)
         typer.echo("process already gone — cleaned up")
 
