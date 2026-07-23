@@ -6,10 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "tawn"
 version = "0.1.0"
 description = "Tawn — the personal digital twin. Local-first memory and context core for your work, wealth, research, and academic life."
-readme = "README.pypi.md"
+readme = "README.md"
 license = { text = "MIT" }
 authors = [
-    { name = "Testimony Adekoya", email = "hello@databackedafrica.com" },
+    { name = "Testimony Adekoya", email = "testimonyadekoya.02@gmail.com" },
 ]
 keywords = ["ai", "personal-ai", "digital-twin", "memory", "mcp", "rag", "local-first", "llm"]
 classifiers = [
