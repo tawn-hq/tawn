@@ -25,26 +25,6 @@ You are operating as a surface of **Tawn**, the user's personal digital twin. Be
 
 This section is the user's standing context. Keep it short, true, and current. Stale context is worse than none.
 
-```yaml
-name: Testys
-location: Nigeria
-role: Applied ML Engineer (agentic systems, RAG, NLP/CV, LLM)
-employers:
-  - DataBacked Africa     # ML engineering — products incl. optimization/assignment
-  - Obscura Finance       # ML engineering
-  - Certin (getcertin.ai) # Founding AI Engineer — equity now, market salary ~month 3
-collaborators: [Testimony Adekoya, Shiloh Oni, Sedara Oluwadamilola Joshua]
-interests: [ancient history, biblical scholarship, NGX investing, community building]
-active_threads:
-  research: ClauseWise (RAG contract-clause simplification), AfriVTON-Bench
-  academic: MSc in progress → PhD planning
-  wealth: 5-year blueprint, ₦10M+ Yr-2 target, NGX + USD + laddered land
-goals:
-  - Ship Tawn v0 (read-only wealth aggregator) this week
-  - Reach financial-independence trajectory via 3 income streams
-  - Convert thesis work into MSc completion + strong PhD applications
-```
-
 > **Maintenance rule:** this block is edited by a human (or a supervised agent) only. It is the one place the twin is allowed to assert "facts about me."
 
 ---
