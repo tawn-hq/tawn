@@ -15,35 +15,11 @@ import frontmatter  # python-frontmatter
 
 _MAX_CHARS = 3200  # ≈ 800 tokens at 4 chars/token
 
-# Patterns that indicate garbage/noise content not worth indexing
-_NOISE_PATTERNS = re.compile(
-    r"\[SYSTEM NOTIFICATION\]|<task-notification>|<output-file>|"
-    r"<system-reminder>|<command-name>|AUTOMATED.*NOT USER INPUT",
-    re.IGNORECASE,
-)
-_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-_TRACEBACK_HDR = re.compile(r"Traceback \(most recent call last\):", re.MULTILINE)
-_BOX_CHARS = frozenset("│╭╰╮╯├┤❱└┌┐╔╗╚╝╞╡")
-
-
-def _is_garbage(text: str) -> bool:
-    """True if content is mostly noise (system tags, UUID lists, tracebacks, Rich panels)."""
-    if _NOISE_PATTERNS.search(text):
-        return True
-    # UUIDs dominate
-    uuid_chars = sum(len(m.group()) for m in _UUID_RE.finditer(text))
-    if uuid_chars > len(text) * 0.3:
-        return True
-    # Rich traceback box-drawing panels: >30% of non-empty lines start with box chars
-    lines = [l for l in text.splitlines() if l.strip()]
-    if lines:
-        box_lines = sum(1 for l in lines if (l.lstrip()[:1] in _BOX_CHARS))
-        if box_lines > len(lines) * 0.3:
-            return True
-    # Python tracebacks with ≥2 File entries
-    if _TRACEBACK_HDR.search(text) and text.count('  File "') >= 2:
-        return True
-    return False
+# Content filtering lives in quality.py — files decide what to look at,
+# quality decides what is worth keeping.
+from tawn.compiler.clean import clean_chunk  # noqa: E402
+from tawn.compiler.grouping import group_for  # noqa: E402
+from tawn.compiler.quality import is_garbage as _is_garbage, is_low_value  # noqa: E402
 
 _TIER_MAP = {
     "identity": 1,
@@ -62,6 +38,10 @@ class ParsedChunk:
     priority_tier: int = 3
     asof: datetime.datetime = field(default_factory=datetime.datetime.utcnow)
     ttl_days: int | None = None
+    # Feed cards group by source document/conversation rather than by chunk.
+    # None means "do not group" — see compiler/grouping.py.
+    group_key: str | None = None
+    group_label: str | None = None
 
     @property
     def content_hash(self) -> str:
@@ -117,7 +97,7 @@ def _split_by_size(text: str, max_chars: int = _MAX_CHARS) -> list[str]:
     return chunks
 
 
-def parse_history_session(path: Path) -> list[ParsedChunk]:
+def parse_history_session(path: Path, home: Path | None = None) -> list[ParsedChunk]:
     """Convert a JSONL chat session into ParsedChunks.
 
     Each session becomes one or more chunks of alternating user/assistant turns,
@@ -148,20 +128,28 @@ def parse_history_session(path: Path) -> list[ParsedChunk]:
     raw_chunks = _split_by_size(full_text)
     result: list[ParsedChunk] = []
     for i, content in enumerate(raw_chunks):
-        if not content.strip():
+        if not content.strip() or is_low_value(content):
             continue
+        cleaned = clean_chunk(content)
+        if not cleaned:
+            continue
+        gkey, glabel = group_for(str(path), cleaned, home or path.parent)
         result.append(ParsedChunk(
             source_path=str(path),
             chunk_index=i,
-            content=content,
+            content=cleaned,
             frontmatter={"source_type": "history", "title": title},
             priority_tier=3,
             asof=asof,
+            group_key=gkey,
+            group_label=glabel,
         ))
     return result
 
 
-def parse_text_file(path: Path, domain: str | None = None) -> list[ParsedChunk]:
+def parse_text_file(
+    path: Path, domain: str | None = None, home: Path | None = None
+) -> list[ParsedChunk]:
     """Parse a plain text (.txt/.rst) file into chunks."""
     raw = path.read_text(encoding="utf-8", errors="replace").strip()
     if not raw:
@@ -173,30 +161,46 @@ def parse_text_file(path: Path, domain: str | None = None) -> list[ParsedChunk]:
     raw_chunks = _split_by_size(raw)
     result: list[ParsedChunk] = []
     for i, content in enumerate(raw_chunks):
-        if not content.strip() or _is_garbage(content):
+        if not content.strip() or _is_garbage(content) or is_low_value(content):
             continue
+        cleaned = clean_chunk(content)
+        if not cleaned:
+            continue
+        gkey, glabel = group_for(str(path), cleaned, home or path.parent)
         result.append(ParsedChunk(
             source_path=str(path),
             chunk_index=i,
-            content=content,
+            content=cleaned,
             frontmatter=fm,
             priority_tier=tier_for_path(path),
             asof=asof,
+            group_key=gkey,
+            group_label=glabel,
         ))
     return result
 
 
-def parse_file(path: Path, domain: str | None = None) -> list[ParsedChunk]:
+def parse_file(
+    path: Path, domain: str | None = None, home: Path | None = None
+) -> list[ParsedChunk]:
     """Parse a markdown file into a list of ParsedChunks."""
     if path.suffix.lower() == ".jsonl":
-        return parse_history_session(path)
+        return parse_history_session(path, home=home)
     if path.suffix.lower() in (".txt", ".rst"):
-        return parse_text_file(path, domain)
+        return parse_text_file(path, domain, home=home)
 
     raw = path.read_text(encoding="utf-8")
     post = frontmatter.loads(raw)
     fm: dict = dict(post.metadata)
     body: str = post.content.strip()
+
+    # The caller classifies files outside raw/ and passes the result in. This
+    # was previously dropped for markdown — frontmatter was taken from the
+    # file alone — so every classified external .md was stored with a NULL
+    # domain and vanished from per-domain views. An author's explicit
+    # `domain:` still wins: a declaration outranks a guess.
+    if domain and not fm.get("domain"):
+        fm["domain"] = domain
 
     tier = tier_for_path(path)
 
@@ -223,15 +227,21 @@ def parse_file(path: Path, domain: str | None = None) -> list[ParsedChunk]:
     for i, content in enumerate(raw_chunks):
         if not content.strip():
             continue
-        if _is_garbage(content):
+        if _is_garbage(content) or is_low_value(content):
             continue
+        cleaned = clean_chunk(content)
+        if not cleaned:
+            continue
+        gkey, glabel = group_for(str(path), cleaned, home or path.parent)
         result.append(ParsedChunk(
             source_path=str(path),
             chunk_index=i,
-            content=content,
+            content=cleaned,
             frontmatter=fm,
             priority_tier=tier,
             asof=asof,
             ttl_days=int(ttl_days) if ttl_days is not None else None,
+            group_key=gkey,
+            group_label=glabel,
         ))
     return result

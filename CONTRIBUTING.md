@@ -5,9 +5,15 @@ and agents equally.
 
 ## One-time setup
 
+See **[INSTALL.md](INSTALL.md)** for the full development setup — database,
+frontend, and the handful of things about this codebase that are not obvious
+from reading it. The short version:
+
 ```bash
 git config core.hooksPath .githooks   # enables the commit-msg check
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3 -m venv .venv && .venv/bin/pip install -e ".[full,dev]"
+.venv/bin/tawn db setup
+.venv/bin/python -m pytest -q         # expect 1,160 passed
 ```
 
 ## Commit messages — Conventional Commits, enforced
@@ -37,10 +43,17 @@ resolved target closes the escape.
 
 ## Code rules (project-specific, non-negotiable)
 
-- **All filesystem I/O goes through `tawn.capability.fs.MediatedFS`.** A bare
-  `open()` / `Path.read_text()` / `Path.write_text()` outside that module (and
-  outside tests) is a review-rejectable defect — it bypasses the capability
-  gate the whole design rests on.
+- **Every path a user's content comes from or goes to must be grant-checked at
+  the point of access.** `capability.grants.path_allowed(grants, path, mode)`
+  before reading or writing anything outside `~/.tawn`, and
+  `capability_allowed` before offering a tool that needs `net` or `shell`.
+  Skipping that check is a review-rejectable defect: it is the gate the whole
+  design rests on.
+
+  *This rule previously said all I/O must go through
+  `tawn.capability.fs.MediatedFS`. It has not been followed — 6 uses against
+  ~135 direct calls — so it is restated above to describe the model the code
+  actually implements. Unifying the two is open work; see INSTALL.md §8.*
 - **TDD**: failing test first, minimal implementation, test green, then commit.
   One task = one commit (see the active plan in `docs/superpowers/plans/`).
 - Tests never touch the real `~/.tawn` — use the `tawn_home` fixture
@@ -48,7 +61,14 @@ resolved target closes the escape.
 - `grants.yaml`, `config.yaml`, `core.db`, `.sha256` sidecars: git-ignored,
   never committed.
 - Secrets never in code, config committed to git, or model context — OS
-  keyring only.
+  keyring only. Config files may hold the *names* of environment variables
+  (`env_keys`), never their values.
+- **Never expose the web API.** It binds `127.0.0.1` and has no authentication.
+  Adding anything that tunnels or rebinds it is a security defect until
+  Stage 11 lands auth.
+- **Prices come from vendor documentation, never memory.** An absent price
+  reports honestly as unpriced; a wrong one corrupts the spend dashboard with
+  no signal.
 
 ## Pull requests
 

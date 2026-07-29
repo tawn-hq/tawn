@@ -1,399 +1,277 @@
-# Installing Tawn (Stage 0 — capability spine)
+# Developing Tawn
 
-What you get today: the `tawn` CLI, a `~/.tawn/` home, deny-all capability
-grants with tamper detection, and an audit log. No memory core yet — that's
-Stage 3+. This doc takes you from clone to a verified working install.
+Setting up a working development environment, and the things about this
+codebase that are not obvious from reading it.
 
-## Prerequisites
+**If you only want to *use* Tawn, this is the wrong document.** Install it with
+`pipx install tawn` and read [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md). This
+file is for people changing the code.
 
-- Linux (Linux-first per the PRD; anything with Python works for Stage 0)
-- Python **3.12+** — check with `python3 --version`
-- git
-- Node **20+** / npm (for the web viewer's frontend — only needed once, or after pulling changes to `frontend/`)
+---
 
-## 1 · Install
+## What you are getting into
+
+| | |
+|---|---|
+| Python | ~23,000 lines across 155 modules |
+| TypeScript | ~7,400 lines, React 18 + Vite |
+| Tests | ~14,000 lines, 1,160 passing, ~4 min full run |
+| Database | PostgreSQL with pgvector |
+| Stages shipped | 0–10 (see `docs/superpowers/plans/ROADMAP.md`) |
+
+The roadmap's **decision log** is the fastest way to understand why the code
+looks the way it does. Most of the non-obvious choices are recorded there with
+their reasoning, including the mistakes.
+
+---
+
+## 1 · Prerequisites
+
+- **Python 3.12+** — `python3 --version`
+- **PostgreSQL 14+** with **pgvector** — the memory core needs both
+- **Node 20+** — only for frontend work
+- **git**
+
+Optional, per feature:
+
+| For | Install |
+|---|---|
+| PDF parsing | comes with `.[full]` |
+| OCR of scans and images | `sudo apt install tesseract-ocr` (or `brew install tesseract`) |
+| Local models | [Ollama](https://ollama.com) |
+
+---
+
+## 2 · Set up
 
 ```bash
-git clone <your-remote-url> taw   # or use your existing checkout
-cd taw
+git clone https://github.com/tawn-hq/tawn.git
+cd tawn
 
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[full,dev]"
 ```
 
-`-e` = editable install: code changes take effect without reinstalling.
+`-e` is an editable install: your changes take effect without reinstalling.
+`[full]` pulls every provider and parser so the whole test suite can run;
+`[dev]` adds pytest and respx.
 
-### Make `tawn` available everywhere (recommended)
-
-The venv install only puts `tawn` on your PATH while the venv is active.
-For a global CLI that works from any directory and any shell, use pipx:
+### The database
 
 ```bash
-sudo apt install -y pipx        # once (or: brew install pipx)
-pipx ensurepath                 # once; restart shell if it changed PATH
-pipx install -e /path/to/taw    # editable — repo changes apply immediately
+sudo apt install -y postgresql postgresql-16-pgvector   # Debian/Ubuntu
+sudo systemctl enable --now postgresql
+
+.venv/bin/tawn db setup
 ```
 
-Now plain `tawn` works everywhere. The dev venv from step 1 is still what
-runs the test suite.
+`db setup` creates the database *and* enables the pgvector extension. Watch for
+`pgvector enabled — semantic search available`. Without it Tawn still runs but
+recall degrades to keyword matching, and a handful of tests behave differently
+from CI.
 
-### Alternative — venv only (dev sessions)
+### Enable the commit hook
 
 ```bash
-source .venv/bin/activate     # now plain `tawn` works in this shell
+git config core.hooksPath .githooks
 ```
 
-Without activation, use `.venv/bin/tawn` everywhere you see `tawn` below.
+This enforces Conventional Commits. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## 2 · Verify the build
+### A global `tawn` for manual testing
+
+The venv binary only exists while the venv is active. For a command that works
+from any directory:
 
 ```bash
-.venv/bin/pytest
+pipx install --force "$PWD[full]"
 ```
 
-Expected:
+Re-run it after changes you want to exercise outside the repo. Note that this
+is a *copy*, not a link — an editable venv install and a pipx install can drift
+apart, which is a common source of "my fix did nothing".
 
-```
-============================== 32 passed in ~1s ===============================
-```
+---
 
-## 3 · First run
+## 3 · Verify
 
 ```bash
-tawn init
+.venv/bin/python -m pytest -q
 ```
 
-Expected output:
+Expect **1,160 passed** in roughly four minutes. If Postgres is unreachable a
+large block fails at once — that is the usual cause, not your change.
 
-```
-wrote deny-all /home/<you>/.tawn/grants.yaml
-tawn home ready at /home/<you>/.tawn (deny-all; edit grants.yaml, then `tawn grant confirm`)
-```
-
-What it created:
-
-```
-~/.tawn/
-├── raw/agent-notes/     # agents' write-back inbox (Stage 3+)
-├── wiki/  vectors/  domains/
-├── federation/inbox/  federation/adapters/
-├── failures/  handoffs/  personality/
-├── grants.yaml          # deny-all capability grants
-├── grants.yaml.sha256   # integrity sidecar
-└── audit.log            # every grant use, allowed or denied
-```
-
-Re-running `tawn init` is safe — it never overwrites an existing
-`grants.yaml`.
-
-## 4 · See the capability system working
-
-Check the current surface (fresh install = nothing granted):
+Then:
 
 ```bash
-tawn grant list
+.venv/bin/tawn doctor
 ```
 
-```
-read: (none)
-write: (none)
-observe: (none)
-system: off
-mcp: (none)
-```
+Every line should read `[ok]`.
 
-Now grant read access to a folder by editing `~/.tawn/grants.yaml`:
+---
 
-```yaml
-read: ['~/code']
-write: []
-observe: []
-system: false
-mcp: []
-```
-
-Run `tawn grant list` again — **it refuses**, because the file changed
-without acknowledgment:
-
-```
-integrity: grants.yaml was edited since last confirm — review it, then run `tawn grant confirm`
-```
-
-That's the tamper detection working. Accept your own edit:
-
-```bash
-tawn grant confirm
-tawn grant list
-```
-
-```
-confirmed grants.yaml (66032436bd5e…)
-read: /home/<you>/code
-write: (none)
-...
-```
-
-Every one of those operations is now in the audit trail:
-
-```bash
-cat ~/.tawn/audit.log
-```
-
-```json
-{"ts": "...", "op": "init", "target": "/home/<you>/.tawn", "ok": true, "detail": "9 dirs created"}
-{"ts": "...", "op": "grant.confirm", "target": ".../grants.yaml", "ok": true, "detail": "6603..."}
-```
-
-## 5 · Prove the enforcement (optional, 30 seconds)
-
-The whole point of Stage 0: code physically cannot touch ungrated paths.
-Try it from a Python shell:
-
-```bash
-.venv/bin/python
-```
-
-```python
-from tawn.capability.audit import AuditLog
-from tawn.capability.fs import MediatedFS, GrantError
-from tawn.capability.grants import load_verified
-from tawn.home import tawn_home
-
-home = tawn_home()
-fs = MediatedFS(load_verified(home / "grants.yaml"), AuditLog(home / "audit.log"), home=home)
-
-fs.read_text("/etc/hostname")     # → GrantError: fs.read denied outside grants
-fs.write_text("/tmp/x", "hi")     # → GrantError: fs.write denied outside grants
-fs.read_text(home / "grants.yaml")  # works — Tawn's own home is self-granted
-```
-
-Both denials land in `~/.tawn/audit.log` with `"ok": false`.
-
-## Database (Stage 1+)
-
-Tawn stores snapshots in Postgres. One command handles setup:
-
-```bash
-tawn db setup
-```
-
-- Postgres already running → creates the `tawn` database if missing, done.
-- No Postgres → prints the exact install commands for your distro; run them, re-run `tawn db setup`.
-- Custom setup → `export TAWN_DB_URL=postgresql+psycopg://user@host/dbname`
-
-Health check anytime: `tawn doctor`. Bare `tawn` shows a live status screen.
-
-## Wealth v0 (see it do something real)
-
-```bash
-tawn wealth init                 # writes ~/.tawn/domains/wealth/holdings.yaml
-$EDITOR ~/.tawn/domains/wealth/holdings.yaml   # NGX + US tickers, usd/land/cash, targets
-tawn wealth snapshot             # value + store (--offline = manual prices only)
-tawn wealth show                 # dashboard: net worth, allocation vs targets, drift
-tawn web                         # web viewer for all domains at http://127.0.0.1:8787
-```
-
-Prices: NGX from the exchange's public endpoint, US equities from stooq.com —
-both keyless, both fall back to the manual prices in your holdings file when
-offline.
-
-### Keep it fresh automatically
-
-```bash
-tawn wealth schedule                     # daily snapshots via a systemd user timer
-tawn wealth schedule --every hourly      # or any OnCalendar spec
-systemctl --user list-timers tawn-wealth-snapshot.timer   # verify
-```
-
-Missed runs (machine off) catch up at next boot (`Persistent=true`).
-
-## Models (Stage 2 — ask your twin)
-
-Tawn routes every prompt through its own model router: local Ollama first-class,
-cloud (Gemini) optional. No key needed for local.
-
-### Local model (Ollama)
-
-```bash
-# 1. install the daemon (once)
-curl -fsSL https://ollama.com/install.sh | sh
-
-# 2. choose a model — tawn lists everything that fits this machine's RAM,
-#    marks its recommendation, and Enter accepts it. Type a number to pick
-#    another, or any ollama tag (e.g. gemma3:270m). -y skips the prompt.
-tawn model setup
-
-# 3. talk to it
-tawn chat                        # interactive — history carries across turns
-tawn ask "summarize what tawn is"   # one-shot
-```
-
-Inside `tawn chat`: `exit`/`quit`/ctrl-d leaves, `/new` clears history,
-`--sensitive` pins the whole session to the local model. The model you chose
-in `tawn model setup` is remembered in `~/.tawn/config.yaml`.
-
-Explore what else your machine could run:
-
-```bash
-tawn model explore               # curated picks, sizes, what fits — ★ = recommended
-tawn model explore --live        # the full ollama.com directory (236+ models)
-tawn model explore --category code
-tawn model pull gemma3:4b        # download anything by tag
-tawn model list                  # what's installed (+ cloud models your keys unlock)
-```
-
-### Cloud models (optional — any key you have)
-
-Tawn enables a cloud provider the moment its key exists. Priority order:
-
-| Provider | Key command | Default model |
-|---|---|---|
-| Anthropic | `tawn key set anthropic` | claude-opus-4-8 |
-| OpenAI | `tawn key set openai` | gpt-5.1 |
-| Gemini | `tawn key set gemini` | gemini-2.5-flash |
-| DeepSeek | `tawn key set deepseek` | deepseek-chat |
-
-```bash
-tawn key set anthropic           # prompted, hidden; stored in the OS keyring, verified
-tawn key show anthropic          # "set (keyring)" — never prints the value
-tawn chat                        # header shows the active provider chain
-```
-
-Failover walks that chain in order and always ends at local Ollama. No keyring
-on a headless box? `export ANTHROPIC_API_KEY=...` (or `OPENAI_`/`GEMINI_`/
-`DEEPSEEK_`) works as a fallback. Keys never live in files, never in the
-ledger, never in error messages.
-
-### Pick the model tawn talks to
-
-```bash
-tawn model use                          # numbered picker: cloud + installed local
-tawn model use anthropic/claude-haiku-4-5   # or set it directly
-tawn model use gemma3:4b                # bare tag = local
-tawn model use auto                     # back to the failover chain
-```
-
-Inside `tawn chat`, `/model` does the same without leaving the session. The
-choice lives in `~/.tawn/config.yaml` (`model:`); the rest of the chain stays
-as failover, and `--sensitive` still overrides everything to local.
-
-### One-command onboarding
-
-New machine? Skip all the individual steps:
-
-```bash
-tawn setup    # guided: home → database → local model → cloud keys
-```
-
-Every step has a sane default (just press Enter) and can be skipped and
-re-run later. Safe to run again any time.
-
-### Sensitive prompts stay home
-
-```bash
-tawn ask --sensitive "read my ledger and summarize my finances"
-```
-
-`--sensitive` structurally removes cloud providers *before* routing — the
-prompt cannot leave the machine, even on retry/failover paths.
-
-### The sovereignty ledger
-
-```bash
-tawn ledger                      # every model call: provider, tokens, cost, local %
-```
-
-Append-only JSONL at `~/.tawn/ledger.jsonl` — metadata only, never prompt text.
-
-If a provider misbehaves (rate limits, 5xx), the router retries once on rate
-limits, otherwise fails over in priority order; three straight failures open a
-60-second circuit breaker so a dead provider stops eating your time.
-
-## Domains — pluggable data modules
-
-Domains are pluggable modules that let Tawn track things. Five ship built-in:
-`wealth`, `work`, `research`, `academic`, `hobby`. You can enable/disable them
-and create your own.
-
-```bash
-tawn domain list                     # all discovered domains + enabled status
-tawn domain enable wealth            # opt in (deny-all by default)
-tawn domain disable hobby            # opt out
-
-tawn domain create                   # describe what you want in plain English;
-                                     # Tawn drafts the domain module, you confirm
-```
-
-`tawn domain create` uses the router's best available model to generate a
-Python domain module from your description. It opens an editor (or runs a
-field wizard if no model is available) and writes the result to
-`~/.tawn/domains/<name>/domain.py` — you own the code.
-
-## Web viewer
-
-Tawn ships a local-only web UI at `http://127.0.0.1:8787`:
-
-```bash
-tawn web                             # starts the server; ctrl-c to stop
-tawn web --port 9000                 # different port
-```
-
-The web viewer is a React SPA backed by the Tawn API. If you want to build it
-from source (not required — pre-built assets ship in the repo):
+## 4 · The frontend
 
 ```bash
 cd frontend
 npm install
-npm run build                        # outputs to frontend/dist/; FastAPI serves it
+npm run dev      # Vite dev server, proxies /api to :8787
 ```
 
-In development mode, run `npm run dev` from `frontend/` for hot-reload at port 5173
-while `tawn web` runs the API on 8787 (Vite proxies `/api` automatically).
+Run `tawn web start` in another terminal so the API is there to proxy to.
 
-### Frontend changes after `git pull`
-
-If `git pull` touched anything under `frontend/`, rebuild it:
+For a production build:
 
 ```bash
-cd frontend && npm ci && npm run build
+npm run build    # tsc -b && vite build → frontend/dist
 ```
 
-(Editable/pipx installs skip the `build_py` hook — rebuild manually after frontend changes.)
-
-## Updating Tawn
-
-Editable installs mean code updates apply instantly:
+**The step people miss:** the wheel serves `src/tawn/web/dist`, not
+`frontend/dist`. After building you must copy it across, or a `pipx` install
+serves a stale UI while your dev server looks perfectly correct:
 
 ```bash
-git pull                    # that's it for pure code changes (pipx -e and venv -e)
+rm -rf ../src/tawn/web/dist && cp -r dist ../src/tawn/web/dist
 ```
 
-After updates that add dependencies or new commands:
+`npm run build` takes 1–2 minutes, mostly Mermaid. Two builds at once appear to
+hang — they are competing, not stuck. `npx tsc -b` alone typechecks in seconds
+and catches most mistakes.
 
-```bash
-.venv/bin/pip install -e ".[dev]"   # refresh the dev venv
-pipx reinstall tawn                  # refresh the global CLI
-tawn doctor                          # confirm all green
+---
+
+## 5 · Where things live
+
+```
+src/tawn/
+├── capability/     grants, audit chain, integrity sidecar, mediated FS
+├── compiler/       the pipeline: parse → chunk → embed → enrich → wiki
+├── memory/         schema, recall, notes, attachments, document reconstruction
+├── model/          router, providers, tools, agent loop, research, diagrams
+│   ├── providers/  one adapter per vendor; OpenAI-compatible ones share one
+│   ├── tools.py    the registry — every callable the model may reach
+│   └── agent.py    the tool-calling loop
+├── mcp/            Tawn as an MCP *client* (mcp_server.py is the server side)
+├── skills/         skill store, sync out to other agents, import from them
+├── tools/          generated-tool creator and loader
+├── parsing/        format detection, extractors, safety harness, OCR
+├── observer/       ambient work capture and authorship attribution
+├── federation/     ingesting other agents' session logs
+├── domains/        the plugin system (work, wealth, research, academic, hobby)
+├── web/routes/     FastAPI routers, one per surface
+└── migrations/     Alembic — inside the package so wheels ship them
+
+frontend/src/
+├── components/Shell.tsx   the app frame: grouped sidebar, header, Page heading
+├── pages/                 one per route
+├── ds/                    design system primitives
+└── lib/                   api client, SSE, theme
 ```
 
-## Troubleshooting
+---
 
-| Symptom | Fix |
-|---|---|
-| `tawn: command not found` | Activate the venv (`source .venv/bin/activate`) or call `.venv/bin/tawn` |
-| `integrity: grants.yaml.sha256 missing` | You created grants.yaml by hand — run `tawn grant confirm` |
-| `python3.12 required` errors on install | `requires-python = ">=3.12"`; install a newer Python (e.g. `pyenv install 3.12`) |
-| Tests touch a weird home | They never touch `~/.tawn` — the suite sets `TAWN_HOME` to a temp dir per test |
-| Want a scratch install | `TAWN_HOME=/tmp/tawn-test tawn init` — everything respects the override |
+## 6 · Things that will bite you
 
-## Uninstall
+All discovered the hard way. Each one cost real time.
 
-```bash
-rm -rf ~/.tawn          # your data + grants (audit log included — it's yours)
-rm -rf <repo>/.venv     # the Python environment
-```
+**Alembic autogenerate is not usable here.** `alembic.ini` pins an in-memory
+SQLite URL, so autogenerate cannot see the real schema — and when it does run
+it emits `pgvector...VECTOR(dim=…)` with no import. Write migrations by hand;
+`versions/a1c4f9b02e77_stage9_observer.py` is a good template.
 
-## For contributors
+**Tests must never touch your real `~/.tawn`.** Use the `tawn_home` fixture,
+which sets `TAWN_HOME`. Anything reading another tool's config (`~/.claude`,
+`~/.codex`) honours a `TAWN_*` env override for the same reason — set it in
+your tests, or your own files leak into assertions and pass for the wrong
+reason.
 
-See `CONTRIBUTING.md` — conventional commits are enforced by a git hook;
-enable it once with `git config core.hooksPath .githooks`.
+**The vector column is deliberately dimensionless.** Pinning it to one
+embedder's width meant every model switch broke compile. Rows of different
+widths coexist; distance operators reject mixed comparisons, so changing
+embedder still requires a re-embed.
+
+**A running `tawn web` holds the code it started with.** After changing
+anything the daemon touches: `tawn web stop && tawn web start`. `tawn doctor`
+warns when the running process is older than the files on disk.
+
+**`except Exception: pass` is load-bearing in the background loop** — compile,
+enrich, reconcile and the observer are each best-effort by contract, so one
+failing must not stop the others. It is also over-used (26 occurrences). Do not
+add more without a comment saying why.
+
+---
+
+## 7 · Common tasks
+
+**Add a model provider.** If it speaks the OpenAI dialect, add a factory to
+`providers/openai_compat.py` and one entry to `CLOUD_REGISTRY` in `router.py` —
+that is all. Tool calling and vision come along for free. Add a price to
+`ledger.py` **from vendor documentation, never from memory**: an absent price
+reports honestly as unpriced, a wrong one corrupts the spend dashboard
+silently.
+
+**Add a built-in tool.** `model/builtins.py` for generic primitives,
+`model/extras.py` for anything that only makes sense because Tawn has a memory.
+Declare its capabilities — the registry will not offer a tool whose capability
+no grant backs.
+
+**Add a document format.** An extractor in `parsing/extractors.py` plus an
+entry in `FORMATS`. Check whether it is really ZIP+XML first; most "hard"
+formats are, and the stdlib handles them for free.
+
+**Change the schema.** Edit `memory/schema.py`, then hand-write the migration.
+
+---
+
+## 8 · The capability layer, honestly
+
+`CONTRIBUTING.md` states that all filesystem I/O must go through
+`tawn.capability.fs.MediatedFS`. **That rule is not enforced and has not been
+followed:** there are 6 uses of `MediatedFS` against roughly 135 direct
+`read_text`/`write_text` calls elsewhere in `src/`.
+
+Worth knowing before you write code against the stated rule and wonder why
+nothing around you looks like that.
+
+What *is* real today:
+
+- **Grants** (`~/.tawn/grants.yaml`) gate what the compiler indexes, which
+  paths built-in tools may touch, which MCP servers may be called, and whether
+  network and shell tools are offered at all. Those checks happen at call time,
+  in `builtins.py`, `extras.py` and `tools.py`.
+- **The audit chain** (`audit.jsonl`) is hash-linked and verified by
+  `verify_chain()`.
+- **The integrity sidecar** on `grants.yaml` means an edit Tawn did not perform
+  must be acknowledged with `tawn grant confirm` before those grants load.
+
+Reconciling the aspiration with the reality — either enforcing `MediatedFS`, or
+rewriting the rule to describe the call-time model that actually exists — is
+open work. See `docs/REVIEW-2026-07-27.md` §5.
+
+---
+
+## 9 · Security expectations for contributors
+
+Current state is written up in
+[`docs/REVIEW-2026-07-27.md`](docs/REVIEW-2026-07-27.md). Two things to hold
+onto while working here:
+
+**There is no authentication on the web API.** It binds `127.0.0.1` and must
+stay that way. Do not add anything that exposes it — that is Stage 11's job and
+it lands together with auth. `tawn web start --public` deliberately refuses.
+
+**Content Tawn did not author is untrusted, and nothing currently marks it.**
+Web pages, attachments, MCP results and compiled memory all reach the model in
+the same turn as tools it can call. If you touch the agent loop, or add a tool
+that returns external content, assume that content is adversarial.
+
+---
+
+## 10 · Where to start reading
+
+1. `docs/superpowers/plans/ROADMAP.md` — the decision log, newest first
+2. `src/tawn/capability/grants.py` — the permission model, ~150 lines
+3. `src/tawn/model/tools.py` — what the model can reach, and why
+4. `src/tawn/compiler/compiler.py` — the pipeline everything else feeds

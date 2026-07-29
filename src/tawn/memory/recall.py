@@ -35,6 +35,7 @@ def _cosine_search(
     top_k: int,
     asof: datetime.datetime | None,
     exclude_imports_prefix: str | None = None,
+    home: Path | None = None,
 ) -> list[Chunk]:
     """Cosine similarity search; falls back to all chunks on SQLite.
 
@@ -49,8 +50,29 @@ def _cosine_search(
 
     if dialect == "postgresql" and vec:
         try:
-            query = query.order_by(Chunk.embedding.cosine_distance(vec))  # type: ignore[attr-defined]
-            return query.limit(top_k).all()
+            # Restrict to rows produced by the embedder currently in use.
+            #
+            # Matching on width alone is not enough: nomic-embed-text and
+            # gemini-embedding-001 are both 768-dimensional but occupy
+            # completely different vector spaces. Comparing across them does
+            # not error — it silently returns nonsense with confident-looking
+            # similarity scores, which is worse than failing. Dimension is not
+            # identity; the model name is.
+            current_model = get_embed_config(home)[0] if home else ""
+            width_matched = query.filter(Chunk.embed_dims == len(vec))
+            if current_model:
+                width_matched = width_matched.filter(
+                    (Chunk.embed_model == current_model)
+                    # Rows predating provenance tracking: width is the only
+                    # signal available, so trust it rather than drop them.
+                    | (Chunk.embed_model.is_(None))
+                )
+            return (
+                width_matched
+                .order_by(Chunk.embedding.cosine_distance(vec))  # type: ignore[attr-defined]
+                .limit(top_k)
+                .all()
+            )
         except Exception:
             pass
 
@@ -108,7 +130,10 @@ def recall(
     embed_error: str | None = None
     try:
         vec = embed_text(query, home)
-        chunks = _cosine_search(session, vec, domain, top_k, asof, exclude_imports_prefix=imports_prefix)
+        chunks = _cosine_search(
+            session, vec, domain, top_k, asof,
+            exclude_imports_prefix=imports_prefix, home=home,
+        )
     except EmbedError as e:
         embed_error = str(e)
         chunks = _like_search(session, query, domain, top_k, asof, exclude_imports_prefix=imports_prefix)

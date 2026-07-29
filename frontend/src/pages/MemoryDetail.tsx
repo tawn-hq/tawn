@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import AppNav from '../components/AppNav'
 import { Badge, Button } from '../ds'
 import { getChunk, type FeedChunk } from '../lib/api'
 import { marked } from 'marked'
@@ -36,8 +35,7 @@ export default function MemoryDetail() {
   const dom = chunk && DOMAINS.includes(chunk.domain as Domain) ? chunk.domain as Domain : undefined
 
   return (
-    <div style={{ background: 'var(--tawn-bg)', minHeight: '100vh' }}>
-      <AppNav />
+    <>
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '32px 24px 80px' }}>
         <div style={{ marginBottom: 20 }}>
           <Button variant="secondary" size="sm" onClick={() => navigate(-1)}>← back</Button>
@@ -90,6 +88,6 @@ export default function MemoryDetail() {
           <p style={{ fontSize: 13, color: 'var(--tawn-text-2)' }}>loading…</p>
         )}
       </div>
-    </div>
+    </>
   )
 }

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import AppNav from '../components/AppNav'
 import { StatCard, Card, Badge, Table, Button } from '../ds'
-import { getStatus, getDomains, getAudit, getChunkStats, type DomainRow, type AuditEntry } from '../lib/api'
+import { useErrors } from '../components/Errors'
+import { getStatus, getDomains, getAudit, getChunkStats, getNotes, type DomainRow, type AuditEntry, type PersonalNote } from '../lib/api'
 
 function useIsMobile() {
   const [m, setM] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640)
@@ -69,10 +69,13 @@ function FadeIn({ children, delay = 0, style }: { children: React.ReactNode; del
 }
 
 export default function Dashboard() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const navigate = useNavigate()
   const mobile = useIsMobile()
   const [domains, setDomains] = useState<DomainRow[]>([])
   const [audit, setAudit] = useState<AuditEntry[]>([])
+  const [notes, setNotes] = useState<PersonalNote[]>([])
   const [initialized, setInitialized] = useState(false)
   const [loading, setLoading] = useState(true)
   const [agentCount, setAgentCount] = useState<number | null>(null)
@@ -80,23 +83,23 @@ export default function Dashboard() {
 
   useEffect(() => {
     Promise.all([
-      getStatus().then((s) => setInitialized(s.initialized)).catch(() => {}),
-      getDomains().then(setDomains).catch(() => {}),
-      getAudit(8).then((p) => setAudit(p.entries)).catch(() => {}),
-      fetch('/api/federation/sources').then((r) => r.json()).then((s: unknown[]) => setAgentCount(s.length)).catch(() => {}),
-      getChunkStats().then((s) => setChunkCount(s.total)).catch(() => {}),
+      getStatus().then((s) => setInitialized(s.initialized)).catch(reportError),
+      getDomains().then(setDomains).catch(reportError),
+      getAudit(8).then((p) => setAudit(p.entries)).catch(reportError),
+      getNotes({ limit: 4 }).then((p) => setNotes(p.notes)).catch(reportError),
+      fetch('/api/federation/sources').then((r) => r.json()).then((s: unknown[]) => setAgentCount(s.length)).catch(reportError),
+      getChunkStats().then((s) => setChunkCount(s.total)).catch(reportError),
     ]).finally(() => setLoading(false))
   }, [])
 
   const enabledDomains = domains.filter((d) => d.nav)
 
   return (
-    <div style={{ background: 'var(--tawn-bg)', minHeight: '100vh' }}>
+    <>
       <style>{`
         @keyframes tawn-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
         @keyframes tawn-slide-in { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:none} }
       `}</style>
-      <AppNav />
       <div style={{ maxWidth: 1040, margin: '0 auto', padding: mobile ? '24px 16px 48px' : '32px 24px 64px' }}>
 
         {/* heading */}
@@ -157,6 +160,38 @@ export default function Dashboard() {
           </FadeIn>
         )}
 
+        {/* your notes — what you told the twin yourself */}
+        <FadeIn delay={160}>
+          <Card style={{ marginBottom: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+              <h2 style={{ fontSize: 13, fontWeight: 600, color: 'var(--tawn-text-2)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>your notes</h2>
+              <span style={{ fontSize: 12, color: 'var(--tawn-lapis)', cursor: 'pointer' }} onClick={() => navigate('/notes')}>
+                {notes.length > 0 ? 'review & edit →' : 'write one →'}
+              </span>
+            </div>
+            {notes.length > 0 ? (
+              notes.map((n) => (
+                <div
+                  key={n.id}
+                  onClick={() => navigate('/notes')}
+                  style={{ padding: '9px 0', borderBottom: '1px solid var(--tawn-line)', cursor: 'pointer' }}
+                >
+                  <div style={{ fontSize: 13, color: 'var(--tawn-text)', lineHeight: 1.55, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                    {n.body}
+                  </div>
+                  <div style={{ fontSize: 11, fontFamily: 'var(--tawn-font-mono)', color: 'var(--tawn-text-3)', marginTop: 3 }}>
+                    {n.domain ? `${n.domain} · ` : ''}{n.asof ? new Date(n.asof).toLocaleDateString() : ''}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p style={{ fontSize: 13, color: 'var(--tawn-text-2)' }}>
+                Nothing written yet. Notes are what you tell your twin directly — they compile into memory alongside everything it gathers.
+              </p>
+            )}
+          </Card>
+        </FadeIn>
+
         {/* bottom grid */}
         <FadeIn delay={180}>
           <div style={{ display: 'grid', gridTemplateColumns: mobile ? '1fr' : '1.4fr 1fr', gap: mobile ? 14 : 20, alignItems: 'start' }}>
@@ -201,6 +236,6 @@ export default function Dashboard() {
           </div>
         </FadeIn>
       </div>
-    </div>
+    </>
   )
 }

@@ -163,8 +163,8 @@ def merge_pending(home: Path, session: Session, actor: str = "system") -> dict:
         request_compile(home)
 
     if merged > 0 or failed > 0:
-        from tawn.capability.audit import AuditLog
-        AuditLog(home / "audit.log").record(
+        from tawn.capability.audit import AuditLog, audit_path
+        AuditLog(audit_path(home)).record(
             "federation.merge", "pending records", ok=(failed == 0),
             detail=f"merged={merged} failed={failed} skipped={skipped}", actor=actor,
         )

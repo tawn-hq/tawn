@@ -36,6 +36,12 @@ _IGNORE_DIRS: frozenset[str] = frozenset({
     "build", "dist", ".next", ".nuxt", ".output",
     "coverage", ".nyc_output", "htmlcov",
     "vendor", "Pods", "DerivedData",
+    # Tawn's own working directory, not memory. The entity resolver writes
+    # every ambiguous match here for a human to triage; indexing that output
+    # fed the compiler its own discards — 14,545 chunks and most of the
+    # entity noise on the first real corpus. Reviews get their own surface,
+    # so this stays out of the memory store permanently.
+    "review-queue",
 })
 
 
@@ -46,12 +52,22 @@ def scan_raw(raw_dir: Path, session: Session) -> DeltaResult:
     disk_files: dict[str, Path] = {
         str(f): f
         for f in raw_dir.rglob("*")
-        if f.is_file() and f.suffix.lower() in _TEXT_EXTS
+        if f.is_file()
+        and f.suffix.lower() in _TEXT_EXTS
+        and not _IGNORE_DIRS.intersection(f.parts)
     }
 
+    # Scoped to raw_dir. This used to load *every* FileState row while
+    # `disk_files` only globbed raw/, so granted repos, history and agent
+    # memory all looked deleted on every compile — their chunks were removed
+    # and re-added on alternating runs (one real pass added 1,347 chunks, the
+    # next removed 2,303). `scan_raw` only has authority over raw/.
+    raw_prefix = str(raw_dir)
     known: dict[str, FileState] = {
         row.path: row
-        for row in session.query(FileState).all()
+        for row in session.query(FileState)
+        .filter(FileState.path.like(raw_prefix + "%"))
+        .all()
     }
 
     for path_str, path in disk_files.items():

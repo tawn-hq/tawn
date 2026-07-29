@@ -3,7 +3,7 @@
 import json
 import re
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, File, Header, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -46,6 +46,13 @@ class ChatBody(BaseModel):
     sensitive: bool = False
     target: str | None = None
     session_id: str | None = None  # client passes to continue existing session
+    # Ids from /api/chat/attach. The parsed text is fetched server-side and
+    # injected for *this turn only*, so a document never rides along in the
+    # history and get re-sent on every later turn.
+    attachments: list[str] = []
+    # Opt-in per turn. Off by default so an existing client sees exactly the
+    # behaviour it had before tools existed.
+    tools: bool = False
 
 
 def _recall_context(query: str, home) -> str | None:
@@ -68,6 +75,34 @@ def _recall_context(query: str, home) -> str | None:
         return None
 
 
+@router.post("/attach")
+async def attach(file: UploadFile = File(...)):
+    """Parse an uploaded document immediately and store its text.
+
+    Parsing on attach rather than on send is what keeps chat responsive: the
+    work happens once, while the user is still typing, instead of on every
+    turn that carries the file.
+    """
+    from tawn.memory import attachments as att
+    from tawn.parsing import ParseError
+
+    data = await file.read()
+    try:
+        stored = att.ingest(tawn_home(), file.filename or "upload", data)
+    except ParseError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"could not read that file: {exc}"}
+    return {"ok": True, **stored.meta()}
+
+
+@router.delete("/attach/{attach_id}")
+def detach(attach_id: str):
+    from tawn.memory import attachments as att
+
+    return {"ok": att.remove(tawn_home(), attach_id)}
+
+
 @router.post("/stream")
 def chat_stream(body: ChatBody):
     home = tawn_home()
@@ -80,10 +115,36 @@ def chat_stream(body: ChatBody):
         context_injection = _recall_context(last_q, home)
 
     raw_msgs = [Message(role=m["role"], content=m["content"]) for m in body.history]
-    if context_injection and raw_msgs:
-        # Prepend context as a system-style injected turn before the last user msg
-        inject_msg = Message(role="user", content=f"[MEMORY CONTEXT — use this to inform your answer]\n{context_injection}\n\n[USER MESSAGE]\n{user_msgs[-1]['content']}")
-        raw_msgs = raw_msgs[:-1] + [inject_msg]
+
+    # Both injections rewrite the final user turn, so they are composed in one
+    # place. Building them separately meant whichever ran last discarded the
+    # other's work.
+    if raw_msgs and (context_injection or body.attachments):
+        blocks: list[str] = []
+
+        # Attachment text joins this turn only, never the stored history: a
+        # 100k-character document re-sent on every later turn is what makes a
+        # conversation stall with no reply.
+        if body.attachments:
+            from tawn.memory import attachments as att
+
+            attached = att.context_block(home, body.attachments)
+            if attached:
+                blocks.append(f"[ATTACHED DOCUMENTS]\n{attached}")
+
+        if context_injection:
+            blocks.append(
+                f"[MEMORY CONTEXT — use this to inform your answer]\n{context_injection}"
+            )
+
+        if blocks:
+            last = raw_msgs[-1]
+            raw_msgs = raw_msgs[:-1] + [
+                Message(
+                    role=last.role,
+                    content="\n\n".join(blocks) + f"\n\n[USER MESSAGE]\n{last.content}",
+                )
+            ]
 
     msgs = with_baseline(raw_msgs, home)
     r = default_router(home, target=body.target)
@@ -104,7 +165,52 @@ def chat_stream(body: ChatBody):
         tokens_out = 0
         emitted_actions: set[str] = set()
         yield f"data: {json.dumps({'type': 'session', 'session_id': hist.session_id, 'title': title})}\n\n"
-        for chunk in r.stream(msgs, sensitive=body.sensitive):
+
+        # Tools run before streaming: a tool call is a structured request, and
+        # the loop must see the whole response to know one was made. Results
+        # are appended to the conversation, then the final answer streams as
+        # usual — so the user still sees tokens arrive, just after any work.
+        turn = list(msgs)
+        if body.tools:
+            try:
+                from tawn.model.agent import run as run_agent
+                from tawn.model.tools import ToolRegistry
+
+                registry = ToolRegistry.build(home)
+                if len(registry):
+                    # The prompt already carries content Tawn did not author —
+                    # an attached document, or chunks recalled from a corpus
+                    # built out of granted paths. Either can contain text aimed
+                    # at the model, so the turn starts restricted rather than
+                    # waiting for a tool to fetch something hostile.
+                    result = run_agent(
+                        r, turn, registry, sensitive=body.sensitive,
+                        tainted=bool(body.attachments or context_injection),
+                    )
+                    for entry in result.trace():
+                        yield f"data: {json.dumps({'type': 'tool', 'tool': entry})}\n\n"
+                    if result.tool_calls:
+                        turn = turn + [
+                            Message(
+                                role="user",
+                                content=(
+                                    "[TOOL RESULTS — use these to answer]\n"
+                                    + "\n\n".join(
+                                        f"{e['name']}: {e['result']}"
+                                        for e in result.trace()
+                                    )
+                                ),
+                            )
+                        ]
+                    if result.withdrawn:
+                        yield f"data: {json.dumps({'type': 'notice', 'message': 'read outside content — ' + ', '.join(sorted(result.withdrawn)) + ' withdrawn for this turn'})}\n\n"
+                    if result.truncated:
+                        yield f"data: {json.dumps({'type': 'notice', 'message': 'tool loop hit its iteration limit'})}\n\n"
+            except Exception as exc:
+                # Tool failure must not cost the user their answer.
+                yield f"data: {json.dumps({'type': 'notice', 'message': f'tools unavailable: {exc}'})}\n\n"
+
+        for chunk in r.stream(turn, sensitive=body.sensitive):
             if chunk.error:
                 yield f"data: {json.dumps({'type': 'error', 'message': chunk.error})}\n\n"
                 return
@@ -183,12 +289,13 @@ def execute_action(body: ActionBody):
             from tawn.capability.integrity import confirm as _integrity_confirm
             digest = _integrity_confirm(grants_path)
             try:
-                from tawn.capability.audit import AuditLog
-                # Was "audit.jsonl" — a different file the /api/audit route
-                # never reads, so every grant made from a chat action was
-                # silently invisible in the audit tab. "audit.log" is the
-                # one file every other writer in this codebase uses.
-                AuditLog(home / "audit.log").record("grant.confirm (chat)", str(grants_path), True, detail=digest, actor="chat")
+                from tawn.capability.audit import AuditLog, audit_path
+                # This line has now been "fixed" in both directions: it once
+                # wrote audit.jsonl (invisible to writers), then audit.log
+                # (invisible to the reader). The split itself was the bug —
+                # `audit_path()` is the single answer, and a test now fails
+                # if anyone hardcodes either filename again.
+                AuditLog(audit_path(home)).record("grant.confirm (chat)", str(grants_path), True, detail=digest, actor="chat")
             except Exception:
                 pass
         return {"ok": True, "message": f"Read access granted to {p}"}

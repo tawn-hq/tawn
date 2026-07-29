@@ -93,3 +93,83 @@ def test_tawn_compile_status_command():
         result = runner.invoke(app, ["compile", "--status"])
     assert result.exit_code == 0
     assert "2026-07-20" in result.output or "never" in result.output
+
+
+# ── Stage 7: tawn enrich ──────────────────────────────────────────────────────
+
+def test_enrich_command_reports_result():
+    from tawn.compiler.enrich import EnrichResult
+
+    with patch("tawn.compiler.enrich.run_enrich") as mock_run:
+        mock_run.return_value = EnrichResult(
+            ok=True, chunks_enriched=7, groups_enriched=2, failed=0
+        )
+        result = runner.invoke(app, ["enrich"])
+
+    assert result.exit_code == 0
+    assert "7" in result.stdout
+    assert "2" in result.stdout
+
+
+def test_enrich_reports_missing_model_without_crashing():
+    """No local model is a normal state, not a failure — exit 0 with a reason."""
+    from tawn.compiler.enrich import EnrichResult
+
+    with patch("tawn.compiler.enrich.run_enrich") as mock_run:
+        mock_run.return_value = EnrichResult(
+            ok=False, error="no model available: ollama down"
+        )
+        result = runner.invoke(app, ["enrich"])
+
+    assert result.exit_code == 0
+    assert "no model available" in result.stdout
+
+
+def test_enrich_passes_limit_through():
+    from tawn.compiler.enrich import EnrichResult
+
+    with patch("tawn.compiler.enrich.run_enrich") as mock_run:
+        mock_run.return_value = EnrichResult(ok=True)
+        runner.invoke(app, ["enrich", "--limit", "42"])
+
+    assert mock_run.call_args.kwargs["limit"] == 42
+
+
+# ── Stage 7: tawn wiki ────────────────────────────────────────────────────────
+
+def test_wiki_list_shows_domains(_home):
+    (_home / "wiki" / "work").mkdir(parents=True, exist_ok=True)
+    (_home / "wiki" / "work" / "index.md").write_text("# Work")
+    result = runner.invoke(app, ["wiki", "list"])
+    assert result.exit_code == 0
+    assert "work" in result.stdout
+
+
+def test_wiki_domain_renders_page(_home):
+    (_home / "wiki" / "work").mkdir(parents=True, exist_ok=True)
+    (_home / "wiki" / "work" / "index.md").write_text("# Work\n\nA line of prose.")
+    result = runner.invoke(app, ["wiki", "work"])
+    assert result.exit_code == 0
+    assert "Work" in result.stdout
+
+
+def test_wiki_missing_domain_hints_compile(_home):
+    result = runner.invoke(app, ["wiki", "nope"])
+    assert "compile" in result.stdout.lower()
+
+
+def test_wiki_entity_fuzzy_match(_home):
+    ents = _home / "wiki" / "entities"
+    ents.mkdir(parents=True, exist_ok=True)
+    (ents / "ClauseWise.md").write_text("# ClauseWise\n\nContract review.")
+    result = runner.invoke(app, ["wiki", "entity", "clausewise"])
+    assert result.exit_code == 0
+    assert "ClauseWise" in result.stdout
+
+
+def test_wiki_entity_no_match_reports(_home):
+    ents = _home / "wiki" / "entities"
+    ents.mkdir(parents=True, exist_ok=True)
+    (ents / "ClauseWise.md").write_text("# ClauseWise")
+    result = runner.invoke(app, ["wiki", "entity", "zzzzzzz"])
+    assert "no entity" in result.stdout.lower()

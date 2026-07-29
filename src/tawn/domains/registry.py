@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from tawn.capability.audit import AuditLog
+from tawn.capability.audit import AuditLog, audit_path
 from tawn.domains.base import DomainSpec
 from tawn.home import tawn_home
 
@@ -39,7 +39,7 @@ def enable(name: str, home: Path | None = None, actor: str = "system") -> None:
     names = enabled_names(home)
     names.add(name)
     _write_enabled(home, names)
-    AuditLog(home / "audit.log").record("domain.enable", name, ok=True, actor=actor)
+    AuditLog(audit_path(home)).record("domain.enable", name, ok=True, actor=actor)
 
 
 def disable(name: str, home: Path | None = None, actor: str = "system") -> None:
@@ -47,7 +47,7 @@ def disable(name: str, home: Path | None = None, actor: str = "system") -> None:
     names = enabled_names(home)
     names.discard(name)
     _write_enabled(home, names)
-    AuditLog(home / "audit.log").record("domain.disable", name, ok=True, actor=actor)
+    AuditLog(audit_path(home)).record("domain.disable", name, ok=True, actor=actor)
 
 
 def discovered_entry_point_domains() -> dict[str, str]:

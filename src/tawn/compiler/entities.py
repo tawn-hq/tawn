@@ -8,7 +8,6 @@ queues ambiguous cases to review-queue.
 from __future__ import annotations
 
 import datetime
-import re
 from pathlib import Path
 
 from rapidfuzz import fuzz
@@ -22,30 +21,20 @@ _AMBIGUOUS_LOW = 80        # fuzz.ratio in [80, 95) with 2+ candidates → revie
 
 
 def _extract_candidates(chunk: ParsedChunk) -> list[str]:
-    """Extract entity candidates from frontmatter entity: field."""
+    """Entity candidates declared in frontmatter.
+
+    Free-text extraction moved to `compiler.enrich`, which asks a model rather
+    than harvesting Title-cased word pairs. The old regex took any two
+    consecutive capitalised words from raw content — including code and stack
+    traces — and produced 8,524 rows of mostly noise: `OK Traceback`,
+    `None File`, `TypeError Object`, `Also I'm`.
+    """
     candidates: list[str] = []
-    fm = chunk.frontmatter
-
-    if "entity" in fm:
-        val = fm["entity"]
-        if isinstance(val, list):
-            candidates.extend(str(v).strip() for v in val if v)
-        elif val:
-            candidates.append(str(val).strip())
-
-    # Capitalised multi-word phrases (2+ consecutive Title-cased words)
-    words = chunk.content.split()
-    phrase: list[str] = []
-    for word in words:
-        clean = re.sub(r"[^A-Za-z0-9']", "", word)
-        if clean and clean[0].isupper() and len(clean) > 1:
-            phrase.append(clean)
-        else:
-            if len(phrase) >= 2:
-                candidates.append(" ".join(phrase))
-            phrase = []
-    if len(phrase) >= 2:
-        candidates.append(" ".join(phrase))
+    val = chunk.frontmatter.get("entity")
+    if isinstance(val, list):
+        candidates.extend(str(v).strip() for v in val if v)
+    elif val:
+        candidates.append(str(val).strip())
 
     # Deduplicate preserving order
     seen: set[str] = set()

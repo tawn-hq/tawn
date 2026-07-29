@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import AppNav from '../components/AppNav'
 import { Card, Button, Badge } from '../ds'
+import { useErrors } from '../components/Errors'
 
 interface FedSource { name: string; path: string; domain: string | null; adapter: string | null }
 interface ConvMeta { id: number; source: string; source_path: string; project: string | null; domain: string | null; ingested_at: string | null }
@@ -92,6 +92,8 @@ tawn:
   # connects to tawn:8787/mcp`
 
 export default function Agents() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const navigate = useNavigate()
   const [sources, setSources] = useState<FedSource[]>([])
   const [copied, setCopied] = useState<string | null>(null)
@@ -102,11 +104,11 @@ export default function Agents() {
     fetch('/api/federation/sources')
       .then((r) => r.json())
       .then((data) => setSources(Array.isArray(data) ? data : []))
-      .catch(() => {})
+      .catch(reportError)
   }, [])
 
   function copy(text: string, slug: string) {
-    navigator.clipboard?.writeText(text).catch(() => {})
+    navigator.clipboard?.writeText(text).catch(reportError)
     setCopied(slug)
     setTimeout(() => setCopied(null), 2000)
   }
@@ -117,11 +119,11 @@ export default function Agents() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
-    }).then(() => fetch('/api/federation/sources').then((r) => r.json()).then(setSources)).catch(() => {})
+    }).then(() => fetch('/api/federation/sources').then((r) => r.json()).then(setSources)).catch(reportError)
   }
 
   async function removeSource(name: string) {
-    await fetch(`/api/federation/sources/${name}`, { method: 'DELETE' }).catch(() => {})
+    await fetch(`/api/federation/sources/${name}`, { method: 'DELETE' }).catch(reportError)
     setSources((s) => s.filter((x) => x.name !== name))
   }
 
@@ -134,9 +136,8 @@ export default function Agents() {
   }
 
   return (
-    <div style={{ background: 'var(--tawn-bg)', minHeight: '100vh' }}>
+    <>
       {showAddModal && <PromptModal onConfirm={addSource} onCancel={() => setShowAddModal(false)} />}
-      <AppNav />
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px 64px' }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>agents</h1>
         <p style={{ fontSize: 13, color: 'var(--tawn-text-2)', marginBottom: 28 }}>
@@ -220,6 +221,6 @@ export default function Agents() {
           </div>
         </div>
       </div>
-    </div>
+    </>
   )
 }

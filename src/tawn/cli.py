@@ -1,18 +1,20 @@
 """tawn CLI (Typer). Surface: init, grant, db setup, doctor, wealth."""
 
+import os
 import platform
 from pathlib import Path
 
 import typer
 from typer.core import TyperGroup
 
-from tawn.capability.audit import AuditLog
+from tawn.capability.audit import AuditLog, audit_path
 from tawn.capability.grants import DEFAULT_GRANTS_YAML, load_verified
 from tawn.capability.integrity import IntegrityError
 from tawn.capability.integrity import confirm as integrity_confirm
 from tawn.config import settings
 from tawn.db import init_db, make_engine
-from tawn.dbsetup import INSTALL_HINTS, ensure_database, probe
+from tawn.compiler.embedder import get_embed_config as _get_embed_cfg
+from tawn.dbsetup import INSTALL_HINTS, PGVECTOR_HINTS, ensure_database, probe
 from tawn.home import init_home, tawn_home
 from tawn.memory.note import note
 from tawn.memory.recall import recall
@@ -99,6 +101,17 @@ def db_setup() -> None:
         raise typer.Exit(1)
     init_db(make_engine(url))
     typer.echo(f"database ready ({url})")
+    if st.vector_ready:
+        typer.echo("pgvector enabled — semantic search available")
+    else:
+        # Not fatal: Tawn works without it, but recall falls back to keyword
+        # matching, and a silent downgrade is worse than a visible warning.
+        typer.secho(
+            "pgvector NOT enabled — recall will use keyword search only",
+            fg=typer.colors.YELLOW,
+        )
+        typer.echo(f"  reason: {st.vector_detail}")
+        typer.echo(PGVECTOR_HINTS)
 
 
 domain_app = typer.Typer(no_args_is_help=True, help="Domain plugins — pip-installed or local.")
@@ -205,49 +218,12 @@ def _domain_create_wizard(name: str, home, console) -> None:
     typer.echo(f"{name} created (field wizard) and enabled")
 
 
-def _start_ngrok(port: int) -> str | None:
-    """Start ngrok tunnel if ngrok is on PATH. Returns public HTTPS URL or None."""
-    import json
-    import shutil
-    import subprocess
-    import time
-    import urllib.request
-    import urllib.error
-
-    if not shutil.which("ngrok"):
-        return None
-    try:
-        # Check if ngrok is already running a tunnel for this port
-        for _ in range(2):
-            try:
-                with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=2) as r:
-                    data = json.loads(r.read())
-                for tunnel in data.get("tunnels", []):
-                    if tunnel.get("proto") == "https":
-                        return tunnel["public_url"]
-            except (urllib.error.URLError, OSError):
-                break
-
-        subprocess.Popen(
-            ["ngrok", "http", str(port)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **_detached_popen_kwargs(),
-        )
-        # poll until tunnel appears (up to 10s)
-        for i in range(20):
-            time.sleep(0.5)
-            try:
-                with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=3) as r:
-                    data = json.loads(r.read())
-                for tunnel in data.get("tunnels", []):
-                    if tunnel.get("proto") == "https":
-                        return tunnel["public_url"]
-            except (urllib.error.URLError, OSError):
-                continue
-    except Exception:
-        pass
-    return None
+# `_start_ngrok` lived here. It opened a public tunnel automatically whenever
+# ngrok was on PATH, which published an unauthenticated API — including a
+# writable grants endpoint — to anyone with the URL. Deleted rather than left
+# dormant: re-wiring it is a one-line mistake. Stage 11 adds authentication,
+# and the tunnel comes back behind it. `/api/setup/tunnel` still *detects* a
+# tunnel the user opened themselves, so the UI can warn about exposure.
 
 
 def _ensure_hosts_entry() -> bool:
@@ -409,6 +385,10 @@ app.add_typer(web_app, name="web")
 def web_start(
     port: int = typer.Option(8787, help="port on 127.0.0.1"),
     force: bool = typer.Option(False, "--force", help="kill whatever holds the port and start anyway"),
+    public: bool = typer.Option(
+        False, "--public",
+        help="expose over an ngrok tunnel — NOT YET SAFE, see the warning it prints",
+    ),
 ) -> None:
     """Start the tawn web viewer in the background. Refuses to start a second
     instance — checks the pidfile *and* the actual port, since anything that
@@ -491,9 +471,25 @@ def web_start(
     typer.echo(f"tawn web started (pid {proc.pid})")
     typer.echo(f"local  → {local_url}")
 
-    ngrok_url = _start_ngrok(port)
-    if ngrok_url:
-        typer.echo(f"public → {ngrok_url}")
+    # The tunnel used to open automatically whenever ngrok was on PATH. Tawn
+    # has no authentication on any route, so that published the whole memory
+    # core — plus a writable grants endpoint — to anyone with the URL. It is
+    # now opt-in, and even then it refuses, because opting in to a hole is
+    # still a hole. Authentication lands in Stage 11.
+    if public:
+        typer.echo("")
+        typer.secho(
+            "refusing to open a public tunnel: Tawn has no authentication yet.",
+            fg="red", bold=True,
+        )
+        typer.echo(
+            "Every route is open, including PUT /api/grants, which can rewrite\n"
+            "what Tawn is allowed to read. Anyone with the URL would have full\n"
+            "access to your memory, your audit log and your API budget.\n\n"
+            "If you need remote access today, tunnel it yourself behind auth\n"
+            "you control — e.g. an SSH tunnel:\n"
+            f"    ssh -L {port}:127.0.0.1:{port} you@this-machine"
+        )
     typer.echo("stop with: tawn web stop")
 
 
@@ -544,6 +540,15 @@ def web_status(full: bool = typer.Option(False, "--full", help="show tunnel, DB,
         typer.echo("stopped")
         return
     port = int(_web_port_file(home).read_text().strip()) if _web_port_file(home).exists() else 8787
+
+    from tawn.staleness import staleness_report as _staleness
+    _code = _staleness(home, "web")
+    if _code["stale"]:
+        typer.secho(
+            "⚠  running code is older than what is on disk — "
+            "restart: tawn web stop && tawn web start",
+            fg=typer.colors.YELLOW,
+        )
 
     # hostname check
     try:
@@ -682,6 +687,8 @@ _SLASH_HELP = """[bold]slash commands[/bold]
   /compile                    run incremental compiler
   /compile --rebuild          force-reprocess all files
   /compile --status           show pending / last-compiled status
+  /wiki [domain|entity]       render a wiki page (lists pages if no arg)
+  /graph <entity>             show an entity's links
 
 [bold cyan]federation[/bold cyan]
   /federation sources         list watched AI tool sources
@@ -824,6 +831,78 @@ def _chat_slash_brief(console, home, arg: str) -> None:
         console.print(f"  [dim]{result['summary']}[/dim]")
 
 
+def _chat_slash_wiki(console, home, arg: str) -> None:
+    """Render a domain page, falling back to a fuzzy entity lookup."""
+    from rich.markdown import Markdown
+
+    root = home / "wiki"
+    if not arg:
+        if not root.is_dir():
+            console.print("[dim]no wiki yet — run /compile[/dim]")
+            return
+        domains = [
+            d.name for d in sorted(root.iterdir())
+            if d.is_dir() and not d.name.startswith(".")
+            and d.name != "entities" and (d / "index.md").exists()
+        ]
+        ent_dir = root / "entities"
+        n = len(list(ent_dir.glob("*.md"))) if ent_dir.is_dir() else 0
+        console.print("  domains : " + (", ".join(domains) or "(none — run /compile)"))
+        console.print(f"  entities: {n}")
+        return
+
+    page = root / arg / "index.md"
+    if page.is_file():
+        console.print(Markdown(page.read_text()))
+        return
+
+    ent_dir = root / "entities"
+    if ent_dir.is_dir():
+        pages = list(ent_dir.glob("*.md"))
+        for p in pages:
+            if p.stem.lower() == arg.lower():
+                console.print(Markdown(p.read_text()))
+                return
+        if pages:
+            from rapidfuzz import fuzz, process
+
+            match = process.extractOne(arg, [p.stem for p in pages], scorer=fuzz.WRatio)
+            if match and match[1] >= 70:
+                console.print(Markdown((ent_dir / f"{match[0]}.md").read_text()))
+                return
+    console.print(f"[dim]no wiki page or entity matching '{arg}'[/dim]")
+
+
+def _chat_slash_graph(console, home, arg: str) -> None:
+    """Print an entity's direct links."""
+    from sqlalchemy.orm import Session as SASession
+
+    from tawn.memory.schema import Entity as _E, EntityEdge as _EE
+
+    if not arg:
+        console.print("[dim]usage: /graph <entity>[/dim]")
+        return
+
+    with SASession(make_engine()) as s:
+        ent = s.query(_E).filter(_E.canonical == arg).first()
+        if ent is None:
+            console.print(f"[dim]no entity named '{arg}'[/dim]")
+            return
+        out = s.query(_EE).filter_by(from_entity_id=ent.id).all()
+        ids = {e.to_entity_id for e in out}
+        names = (
+            {e.id: e.canonical for e in s.query(_E).filter(_E.id.in_(ids)).all()}
+            if ids else {}
+        )
+        label = ent.canonical
+
+    console.print(label)
+    for e in out:
+        console.print(f"  ├─ {e.relation} → {names.get(e.to_entity_id, '?')}")
+    if not out:
+        console.print("  [dim](no links yet — run /compile then `tawn enrich`)[/dim]")
+
+
 def _chat_slash_compile(console, home, args: str) -> None:
     from sqlalchemy.orm import Session as SASession
     from tawn.compiler.compiler import compile_status, run_compile
@@ -887,7 +966,7 @@ def _chat_slash_federation(console, home, arg: str) -> None:
             console.print(f"[red]source '{name}' already registered[/]")
             return
         save_config(home, existing + [FedSource(name=name, path=path, adapter="generic")])
-        AuditLog(home / "audit.log").record("federation.source_add", name, ok=True, detail=path, actor="cli")
+        AuditLog(audit_path(home)).record("federation.source_add", name, ok=True, detail=path, actor="cli")
         console.print(f"  [dim]added '{name}' → {path}[/dim]")
 
     elif sub == "remove":
@@ -897,7 +976,7 @@ def _chat_slash_federation(console, home, arg: str) -> None:
         name = parts[1]
         sources = [s for s in load_config(home) if s.name != name]
         save_config(home, sources)
-        AuditLog(home / "audit.log").record("federation.source_remove", name, ok=True, actor="cli")
+        AuditLog(audit_path(home)).record("federation.source_remove", name, ok=True, actor="cli")
         console.print(f"  [dim]removed '{name}'[/dim]")
 
     elif sub == "merge":
@@ -1145,6 +1224,12 @@ def chat(
             continue
         if low.startswith("/compile"):
             _chat_slash_compile(console, home, line[len("/compile"):])
+            continue
+        if low.startswith("/wiki"):
+            _chat_slash_wiki(console, home, line[len("/wiki"):].strip())
+            continue
+        if low.startswith("/graph"):
+            _chat_slash_graph(console, home, line[len("/graph"):].strip())
             continue
         if low.startswith("/export"):
             _chat_slash_export(console, home, line[len("/export"):])
@@ -1511,6 +1596,38 @@ def doctor() -> None:
     checks: list[tuple[str, bool, str]] = []
     checks.append(("python >= 3.12", True, platform.python_version()))
     checks.append(("home initialized", (home / "raw").is_dir(), str(home)))
+
+    # A running daemon older than the code on disk silently serves pre-fix
+    # behaviour, which reads as the fix not working.
+    from tawn.staleness import staleness_report as _staleness
+    _web = _staleness(home, "web")
+    if _web["running"] is None:
+        checks.append(("web daemon code", True, "not running (or predates check)"))
+    elif _web["stale"]:
+        checks.append(("web daemon code", False, "STALE — restart: tawn web stop && tawn web start"))
+    else:
+        checks.append(("web daemon code", True, f"current ({_web['current']})"))
+
+    # Two installs on PATH means edits can land in one while the other runs.
+    import shutil as _shutil
+    _which = _shutil.which("tawn")
+    _installs = []
+    for _d in os.environ.get("PATH", "").split(os.pathsep):
+        _cand = Path(_d) / "tawn"
+        if _cand.is_file() and str(_cand) not in _installs:
+            _installs.append(str(_cand))
+    if len(_installs) > 1:
+        # Informational, not a failure: several installs is normal on a dev
+        # machine. It is worth naming because edits can land in one while a
+        # different one runs — but `doctor` exiting non-zero over it would
+        # break CI and scripts for a benign condition.
+        others = ", ".join(i for i in _installs if i != _which)
+        checks.append((
+            "tawn install", True,
+            f"{_which} (note: {len(_installs)} on PATH; also {others})",
+        ))
+    else:
+        checks.append(("tawn install", True, _which or "not on PATH"))
     grants_ok = True
     grants_detail = "deny-all (no grants.yaml)"
     if (home / "grants.yaml").exists():
@@ -1542,7 +1659,7 @@ def init() -> None:
         grants_path.write_text(DEFAULT_GRANTS_YAML)
         integrity_confirm(grants_path)
         typer.echo(f"wrote deny-all {grants_path}")
-    audit = AuditLog(home / "audit.log")
+    audit = AuditLog(audit_path(home))
     audit.record("init", str(home), ok=True, detail=f"{len(created)} dirs created", actor="cli")
     typer.echo(
         f"tawn home ready at {home} (deny-all; edit grants.yaml, then `tawn grant confirm`)"
@@ -1593,7 +1710,7 @@ def grant_confirm() -> None:
         typer.echo("no grants.yaml — run `tawn init` first", err=True)
         raise typer.Exit(1)
     digest = integrity_confirm(grants_path)
-    AuditLog(home / "audit.log").record(
+    AuditLog(audit_path(home)).record(
         "grant.confirm", str(grants_path), ok=True, detail=digest, actor="cli"
     )
     typer.echo(f"confirmed grants.yaml ({digest[:12]}…)")
@@ -1705,6 +1822,242 @@ def cmd_compile(
     )
 
 
+@app.command("reconcile")
+def cmd_reconcile(
+    rebuild: bool = typer.Option(False, "--rebuild", help="Recompute rollups from scratch"),
+) -> None:
+    """Fold new ledger entries into spend rollups.
+
+    The ledger file is the source of truth; rollups are a derived cache the
+    dashboard can query without parsing tens of thousands of lines.
+    """
+    from sqlalchemy.orm import Session as SASession
+
+    from tawn.model.rollup import reconcile
+
+    with SASession(make_engine()) as s:
+        res = reconcile(tawn_home(), s, rebuild=rebuild)
+    typer.echo(f"reconciled {res['entries']} entries → {res['rollups']} rollups")
+
+
+@app.command("enrich")
+def cmd_enrich(
+    limit: int = typer.Option(200, "--limit", help="Max chunks to enrich this run"),
+    cloud: bool = typer.Option(
+        False, "--cloud",
+        help="Allow cloud providers — SENDS CHUNK CONTENTS OFF THIS MACHINE",
+    ),
+) -> None:
+    """Add titles, summaries, entities and relations to compiled chunks.
+
+    Resumable — run it repeatedly to work through a backlog. Local-only by
+    default; without a usable local model it reports and exits rather than
+    failing, since unenriched chunks still display as cleaned text.
+
+    `--cloud` opts in to remote providers. Your memory contents are sent to
+    whichever provider the router selects, so it is never the default.
+    """
+    from sqlalchemy.orm import Session as SASession
+
+    from tawn.compiler import enrich as _enrich
+
+    home = tawn_home()
+    engine = make_engine()
+    if cloud:
+        typer.echo("cloud enrichment enabled — chunk contents will leave this machine")
+    with SASession(engine) as s:
+        result = _enrich.run_enrich(home, s, limit=limit, allow_cloud=cloud)
+
+    if not result.ok:
+        typer.echo(f"enrich stopped — {result.error}")
+        return
+    typer.echo(
+        f"enrich ok — {result.chunks_enriched} chunks, "
+        f"{result.groups_enriched} groups, {result.failed} failed"
+    )
+
+
+# ── wiki commands ──────────────────────────────────────────────────────────────
+
+# Root-level dirs under wiki/ that are not domains.
+_WIKI_NON_DOMAIN = {"entities"}
+
+
+def _render_markdown(text: str) -> None:
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    Console().print(Markdown(text))
+
+
+def _wiki_root() -> Path:
+    return tawn_home() / "wiki"
+
+
+def _wiki_domains() -> list[str]:
+    root = _wiki_root()
+    if not root.is_dir():
+        return []
+    return [
+        d.name for d in sorted(root.iterdir())
+        if d.is_dir() and not d.name.startswith(".")
+        and d.name not in _WIKI_NON_DOMAIN and (d / "index.md").exists()
+    ]
+
+
+def _wiki_entity_page(name: str) -> Path | None:
+    """Exact match first, then fuzzy above a confidence floor."""
+    ent_dir = _wiki_root() / "entities"
+    if not ent_dir.is_dir():
+        return None
+    pages = list(ent_dir.glob("*.md"))
+    if not pages:
+        return None
+
+    for p in pages:
+        if p.stem.lower() == name.lower():
+            return p
+
+    from rapidfuzz import fuzz, process
+
+    match = process.extractOne(name, [p.stem for p in pages], scorer=fuzz.WRatio)
+    if match and match[1] >= 70:
+        return ent_dir / f"{match[0]}.md"
+    return None
+
+
+def wiki_list() -> None:
+    """List compiled wiki pages."""
+    root = _wiki_root()
+    if not root.is_dir():
+        typer.echo("no wiki yet — run `tawn compile`")
+        return
+    ent_dir = root / "entities"
+    n_entities = len(list(ent_dir.glob("*.md"))) if ent_dir.is_dir() else 0
+    typer.echo("domains: " + (", ".join(_wiki_domains()) or "(none)"))
+    typer.echo(f"entities: {n_entities}")
+
+
+def wiki_entity(name: str) -> None:
+    """Render an entity page."""
+    page = _wiki_entity_page(name)
+    if page is None:
+        typer.echo(f"no entity matching '{name}' — run `tawn compile`")
+        return
+    _render_markdown(page.read_text())
+
+
+def wiki_graph(name: str) -> None:
+    """Print an entity's direct links as an ASCII tree."""
+    from sqlalchemy.orm import Session as SASession
+
+    from tawn.memory.schema import Entity as _E, EntityEdge as _EE
+
+    with SASession(make_engine()) as s:
+        ent = s.query(_E).filter(_E.canonical == name).first()
+        if ent is None:
+            typer.echo(f"no entity named '{name}'")
+            return
+        out = s.query(_EE).filter_by(from_entity_id=ent.id).all()
+        inc = s.query(_EE).filter_by(to_entity_id=ent.id).all()
+        ids = {e.to_entity_id for e in out} | {e.from_entity_id for e in inc}
+        names = (
+            {e.id: e.canonical for e in s.query(_E).filter(_E.id.in_(ids)).all()}
+            if ids else {}
+        )
+        label = ent.canonical
+
+    typer.echo(label)
+    for e in out:
+        typer.echo(f"  ├─ {e.relation} → {names.get(e.to_entity_id, '?')}")
+    for e in inc:
+        typer.echo(f"  └← {names.get(e.from_entity_id, '?')} ({e.relation})")
+    if not out and not inc:
+        typer.echo("  (no links yet — run `tawn enrich`)")
+
+
+@app.command("wiki")
+def cmd_wiki(
+    target: str = typer.Argument(None, help="Domain name, or: list | entity | graph"),
+    name: str = typer.Argument(None, help="Entity name, for `entity` and `graph`"),
+) -> None:
+    """Browse the compiled wiki.
+
+    \b
+      tawn wiki                 list domains and entity count
+      tawn wiki list            same
+      tawn wiki <domain>        render that domain's index
+      tawn wiki entity <name>   render an entity page (fuzzy match)
+      tawn wiki graph <name>    print an entity's links
+
+    Dispatch is manual rather than a Typer sub-app: a sub-app callback with a
+    positional argument swallows its own subcommand names, so `wiki list`
+    would be read as the domain "list".
+    """
+    if not target or target == "list":
+        wiki_list()
+        return
+
+    if target == "entity":
+        if not name:
+            typer.echo("usage: tawn wiki entity <name>")
+            return
+        wiki_entity(name)
+        return
+
+    if target == "graph":
+        if not name:
+            typer.echo("usage: tawn wiki graph <name>")
+            return
+        wiki_graph(name)
+        return
+
+    page = _wiki_root() / target / "index.md"
+    if not page.is_file():
+        typer.echo(f"no wiki page for '{target}' — run `tawn compile`")
+        return
+    _render_markdown(page.read_text())
+
+
+@app.command("reembed")
+def cmd_reembed(
+    limit: int = typer.Option(0, "--limit", help="Max chunks this run (0 = all)"),
+    status: bool = typer.Option(False, "--status", help="Show how many are stale"),
+) -> None:
+    """Re-embed chunks whose vectors came from a different embedding model.
+
+    Switching embed model leaves existing vectors stale, and a normal compile
+    will not repair them — it only reconsiders chunks whose source files
+    changed. Recall filters to the current model, so stale chunks silently
+    drop out of search until this runs.
+    """
+    from sqlalchemy.orm import Session as SASession
+
+    from tawn.compiler import reembed as _re
+
+    home = tawn_home()
+    engine = make_engine()
+    with SASession(engine) as s:
+        n_stale = _re.stale_count(s, home)
+        if status:
+            model, dims = _get_embed_cfg(home)
+            typer.echo(f"embed model : {model or '(unset)'} ({dims} dims)")
+            typer.echo(f"stale chunks: {n_stale}")
+            return
+        if not n_stale:
+            typer.echo("all chunks match the current embedding model")
+            return
+
+        typer.echo(f"re-embedding {n_stale if not limit else min(limit, n_stale)} chunks…")
+
+        def _tick(done: int, total: int) -> None:
+            if done % 200 < 32:
+                typer.echo(f"  {done}/{total}")
+
+        done = _re.reembed_stale(s, home, limit=limit or None, progress=_tick)
+    typer.echo(f"re-embedded {done} chunks")
+
+
 def _install_compile_timer() -> None:
     """Write a systemd user timer that runs `tawn compile` every 5 minutes."""
     import sys
@@ -1730,10 +2083,165 @@ def _install_compile_timer() -> None:
 # ── mcp command ────────────────────────────────────────────────────────────────
 
 @app.command("mcp")
-def mcp_serve() -> None:
-    """Start the Tawn MCP server (stdio transport)."""
-    from tawn.mcp_server import mcp
-    mcp.run(transport="stdio")
+def cmd_mcp(
+    action: str = typer.Argument(
+        None,
+        help="serve | list | add | enable | disable | remove | test | adopt | tools",
+    ),
+    name: str = typer.Argument(None, help="Server name, for most actions"),
+    command: str = typer.Option(None, "--command", help="Launch command, for `add`"),
+    args: str = typer.Option("", "--args", help="Space-separated args, for `add`"),
+    url: str = typer.Option(None, "--url", help="HTTP endpoint, for `add`"),
+    env: str = typer.Option("", "--env", help="Comma-separated env var NAMES"),
+) -> None:
+    """Tawn's MCP server, and the MCP servers Tawn can use.
+
+    \b
+      tawn mcp                    start Tawn's own MCP server (stdio)
+      tawn mcp serve              same, named explicitly
+      tawn mcp list               servers Tawn knows about
+      tawn mcp adopt              find servers your other tools already configure
+      tawn mcp add <name> --command npx --args "-y srv"
+      tawn mcp enable|disable|remove <name>
+      tawn mcp test <name>        connect and list its tools
+      tawn mcp tools [name]       the cached tool catalog
+
+    A bare `tawn mcp` still starts the server, so existing entries in
+    claude.json keep working. Dispatch is manual rather than a Typer sub-app,
+    for the same reason as `tawn wiki`: a sub-app callback with a positional
+    argument swallows its own subcommand names.
+    """
+    # No argument means the historical behaviour: be the server.
+    if action in (None, "serve"):
+        from tawn.mcp_server import mcp
+
+        mcp.run(transport="stdio")
+        return
+
+    from tawn.mcp.adopt import adopt as adopt_servers
+    from tawn.mcp.adopt import discover_configured_servers
+    from tawn.mcp.catalog import cached_tools, get_tools
+    from tawn.mcp.client import probe
+    from tawn.mcp.registry import (
+        MCPServer, get_server, load_servers, remove_server, upsert_server,
+    )
+
+    home = tawn_home()
+
+    if action == "list":
+        servers = load_servers(home)
+        if not servers:
+            typer.echo("no servers registered — try `tawn mcp adopt`")
+            return
+        granted = set(_mcp_granted(home))
+        for s in servers:
+            state = "on" if s.enabled else "off"
+            gate = "granted" if s.name in granted else "not granted"
+            n = len(cached_tools(home, s.name))
+            typer.echo(f"  {s.name:<20} {s.transport:<6} {state:<4} {gate:<12} {n} tools")
+        return
+
+    if action == "adopt":
+        found = discover_configured_servers()
+        if not found:
+            typer.echo("no MCP servers found in your other tools' configs")
+            return
+        known = {s.name for s in load_servers(home)}
+        fresh = [s for s in found if s.name not in known]
+        for s in found:
+            mark = "new" if s.name in {f.name for f in fresh} else "known"
+            typer.echo(f"  {s.name:<20} {s.source:<24} [{mark}]")
+        written = adopt_servers(home, found)
+        typer.echo(
+            f"\n{written} added, disabled. Enable with `tawn mcp enable <name>`,"
+            "\nand add the name to `mcp:` in grants.yaml before it can be called."
+        )
+        return
+
+    if action == "add":
+        if not name or (not command and not url):
+            typer.echo("usage: tawn mcp add <name> --command <cmd> | --url <url>")
+            raise typer.Exit(1)
+        server = MCPServer(
+            name=name,
+            transport="http" if url else "stdio",
+            command=command,
+            args=args.split() if args else [],
+            url=url,
+            env_keys=[e.strip() for e in env.split(",") if e.strip()],
+        )
+        upsert_server(home, server)
+        typer.echo(f"added {name}, disabled — `tawn mcp enable {name}` to turn it on")
+        return
+
+    if action in ("enable", "disable"):
+        if not name:
+            typer.echo(f"usage: tawn mcp {action} <name>")
+            raise typer.Exit(1)
+        server = get_server(home, name)
+        if server is None:
+            typer.echo(f"no such server: {name}")
+            raise typer.Exit(1)
+        server.enabled = action == "enable"
+        upsert_server(home, server)
+        typer.echo(f"{name} {action}d")
+        if action == "enable" and name not in _mcp_granted(home):
+            typer.echo(
+                f"note: '{name}' is not in `mcp:` in grants.yaml, so it still"
+                " cannot be called."
+            )
+        return
+
+    if action == "remove":
+        if not name:
+            typer.echo("usage: tawn mcp remove <name>")
+            raise typer.Exit(1)
+        typer.echo(f"removed {name}" if remove_server(home, name) else f"no such server: {name}")
+        return
+
+    if action == "test":
+        if not name:
+            typer.echo("usage: tawn mcp test <name>")
+            raise typer.Exit(1)
+        server = get_server(home, name)
+        if server is None:
+            typer.echo(f"no such server: {name}")
+            raise typer.Exit(1)
+        health = probe(server)
+        if not health.reachable:
+            typer.echo(f"unreachable: {health.error}")
+            raise typer.Exit(1)
+        typer.echo(f"{name}: {health.tool_count} tools")
+        for t in health.tools:
+            typer.echo(f"  {t['name']:<28} {t.get('description', '')[:60]}")
+        return
+
+    if action == "tools":
+        servers = [s for s in load_servers(home) if not name or s.name == name]
+        if not servers:
+            typer.echo("no matching server")
+            return
+        for s in servers:
+            tools, source = get_tools(home, s)
+            typer.echo(f"{s.name} ({source}):")
+            for t in tools:
+                typer.echo(f"  {t['name']:<28} {t.get('description', '')[:60]}")
+            if not tools:
+                typer.echo("  (none)")
+        return
+
+    typer.echo(f"unknown action: {action}")
+    raise typer.Exit(1)
+
+
+def _mcp_granted(home) -> list[str]:
+    """Server names allowed by the `mcp:` grant. Empty when unreadable."""
+    from tawn.capability.grants import Grants
+
+    try:
+        return Grants.load(home / "grants.yaml").mcp or []
+    except Exception:
+        return []
 
 
 # ── federation commands ────────────────────────────────────────────────────────
@@ -1777,7 +2285,7 @@ def fed_add(
     new = FedSource(name=name, path=path, adapter="generic",
                     format=format, auto_detected=False)
     save_config(home, existing + [new])
-    AuditLog(home / "audit.log").record("federation.source_add", name, ok=True, detail=path, actor="cli")
+    AuditLog(audit_path(home)).record("federation.source_add", name, ok=True, detail=path, actor="cli")
     typer.echo(f"added '{name}' → {path}")
     typer.echo("run `tawn grant confirm` to grant read access to this path")
 
@@ -1798,7 +2306,7 @@ def fed_remove(
         typer.echo(f"source '{name}' not found", err=True)
         raise typer.Exit(1)
     save_config(home, sources)
-    AuditLog(home / "audit.log").record("federation.source_remove", name, ok=True, actor="cli")
+    AuditLog(audit_path(home)).record("federation.source_remove", name, ok=True, actor="cli")
     typer.echo(f"removed '{name}'")
 
 
@@ -1943,6 +2451,10 @@ def cmd_help() -> None:
 | `tawn recall "query"` | Semantic search over compiled memory |
 | `tawn brief <domain>` | Summary of a domain (entities, chunk count, staleness) |
 | `tawn compile` | Compile raw/ into searchable chunks + wiki |
+| `tawn enrich` | Add titles, summaries and entities to compiled chunks |
+| `tawn wiki [domain]` | Browse the compiled wiki |
+| `tawn wiki entity <name>` | Render an entity page |
+| `tawn wiki graph <name>` | Show an entity's links |
 | `tawn compile --status` | Show pending/last-compiled status |
 | `tawn compile --rebuild` | Force reprocess all files |
 
@@ -2181,3 +2693,340 @@ def cmd_update(
         console.print(f"[red]{result.get('error', 'unknown error')}[/]")
         raise typer.Exit(1)
     console.print("update started in background — restart tawn when done")
+
+
+@app.command("observe")
+def cmd_observe(
+    action: str = typer.Argument("status", help="status | projects | start | stop | review"),
+    project: str = typer.Argument(None, help="Project name, for `review`"),
+    cloud: bool = typer.Option(False, "--cloud", help="Allow a cloud model for review notes"),
+) -> None:
+    """Ambient Observer — what you and your agents worked on.
+
+    \b
+      tawn observe status              which sources are on, what is pending
+      tawn observe projects            what it is watching
+      tawn observe start               run the watcher in the foreground
+      tawn observe review [project]    close the session and write the note now
+
+    Dispatch is manual rather than a Typer sub-app, for the same reason as
+    `tawn wiki`: a sub-app callback with a positional argument swallows its own
+    subcommand names.
+    """
+    import datetime
+
+    from sqlalchemy.orm import Session
+
+    from tawn.capability.grants import Grants
+    from tawn.db import session as db_session
+    from tawn.memory.schema import ObserverSession
+    from tawn.observer.projects import discover_projects, tier_enabled
+    from tawn.observer.review import process_pending
+    from tawn.observer.sessions import close_session, current_session
+
+    home = tawn_home()
+    grants = Grants.load(home / "grants.yaml")
+
+    if action == "projects":
+        projects = discover_projects(grants)
+        if not projects:
+            typer.echo("no projects — grant read: access to a directory first")
+            return
+        for p in projects:
+            typer.echo(f"{p.name:<24} {p.root}  {'git' if p.is_git else '—'}")
+        return
+
+    if action == "status":
+        tiers = [t for t in ("fs", "git", "agents") if tier_enabled(grants, t)]
+        typer.echo(f"tiers:    {', '.join(tiers) or '(none — observe: is empty)'}")
+        typer.echo(f"projects: {len(discover_projects(grants))}")
+        if not grants.write:
+            typer.echo("notes:    disabled — no write: grant, events still recorded")
+        # The grant-side answers above are the useful part of `status` and need
+        # no database. Report them even when the DB is unreachable or has not
+        # been migrated yet, rather than replacing the whole command with a
+        # traceback.
+        try:
+            engine = make_engine()
+            with db_session(engine) as s:
+                open_n = (
+                    s.query(ObserverSession)
+                    .filter(ObserverSession.ended_at.is_(None))
+                    .count()
+                )
+                pending = (
+                    s.query(ObserverSession)
+                    .filter(ObserverSession.note_state == "pending_note")
+                    .count()
+                )
+            typer.echo(f"sessions: {open_n} open, {pending} awaiting notes")
+        except Exception:
+            typer.echo("sessions: unavailable — run `tawn db setup`")
+        return
+
+    if action == "review":
+        now = datetime.datetime.now(datetime.timezone.utc)
+        engine = make_engine()
+        with db_session(engine) as s:
+            names = [project] if project else [p.name for p in discover_projects(grants)]
+            for name in names:
+                sess = current_session(s, name)
+                if sess is not None:
+                    close_session(s, sess, now, "manual")
+            n = process_pending(s, home, cloud)
+        typer.echo(f"{n} note(s) written")
+        return
+
+    if action == "start":
+        if not grants.observe:
+            typer.echo("observe: is empty — add [fs, git, agents] to grants.yaml")
+            raise typer.Exit(1)
+        from tawn.observer.watch import ObserverWatcher
+
+        engine = make_engine()
+        typer.echo("watching — ctrl-c to stop")
+        watcher = ObserverWatcher(home, lambda: Session(engine))
+        try:
+            watcher.run()
+        except KeyboardInterrupt:
+            watcher.stop()
+        return
+
+    if action == "stop":
+        typer.echo("the observer runs inside `tawn web` — stop it with `tawn web stop`")
+        return
+
+    typer.echo(f"unknown action: {action}")
+    raise typer.Exit(1)
+
+
+@app.command("skill")
+def cmd_skill(
+    action: str = typer.Argument("list", help="list | new | show | remove | sync | import"),
+    name: str = typer.Argument(None, help="Skill name"),
+    description: str = typer.Option("", "--description", "-d", help="For `new`"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="For `import`"),
+    cloud: bool = typer.Option(False, "--cloud", help="Allow a cloud model to draft"),
+) -> None:
+    """Skills — reusable instructions, portable to every agent you use.
+
+    \b
+      tawn skill list                    what you have
+      tawn skill new <name> -d "..."     draft one (uses your model if available)
+      tawn skill show <name>
+      tawn skill remove <name>
+      tawn skill sync                    project them into your other agents
+      tawn skill import [--dry-run]      pull in skills those agents already have
+    """
+    from tawn.skills.importer import import_skills
+    from tawn.skills.store import Skill, get_skill, list_skills, remove_skill, save_skill
+    from tawn.skills.sync import detect_targets, sync_out
+
+    home = tawn_home()
+
+    if action == "list":
+        skills = list_skills(home)
+        if not skills:
+            typer.echo("no skills yet — `tawn skill new <name> -d \"...\"`")
+            return
+        for s in skills:
+            origin = f"from {s.imported_from}" if s.imported_from else "authored"
+            typer.echo(f"  {s.name:<24} {origin:<22} {s.description[:60]}")
+        return
+
+    if action == "show":
+        if not name:
+            typer.echo("usage: tawn skill show <name>")
+            raise typer.Exit(1)
+        skill = get_skill(home, name)
+        if skill is None:
+            typer.echo(f"no skill named {name!r}")
+            raise typer.Exit(1)
+        typer.echo(skill.to_markdown())
+        return
+
+    if action == "remove":
+        if not name:
+            typer.echo("usage: tawn skill remove <name>")
+            raise typer.Exit(1)
+        typer.echo(f"removed {name}" if remove_skill(home, name) else f"no skill named {name!r}")
+        return
+
+    if action == "new":
+        if not name:
+            typer.echo('usage: tawn skill new <name> -d "what it does"')
+            raise typer.Exit(1)
+        body = ""
+        if description:
+            try:
+                from tawn.model.router import default_router
+                from tawn.model.types import Message
+
+                prompt = (
+                    f"Write the body of an agent skill called '{name}'.\n"
+                    f"What it should do: {description}\n\n"
+                    "Output ONLY markdown instructions addressed to the agent. "
+                    "No frontmatter, no title, no commentary. Be specific and "
+                    "concrete — vague guidance is worse than none."
+                )
+                body = default_router(home).complete(
+                    [Message(role="user", content=prompt)], sensitive=not cloud
+                ).text.strip()
+            except Exception as exc:
+                # A missing model must not block authoring; scaffold instead.
+                typer.echo(f"(no model available: {exc} — scaffolding a template)")
+        if not body:
+            body = f"# {name}\n\n{description or 'Describe what the agent should do.'}\n"
+        path = save_skill(
+            home, Skill(name=name, description=description or name, body=body)
+        )
+        typer.echo(f"wrote {path}\nrun `tawn skill sync` to project it to your agents")
+        return
+
+    if action == "sync":
+        report = sync_out(home)
+        if not report.targets and not report.skipped:
+            typer.echo("no agents detected on this machine")
+            return
+        for w in report.written:
+            typer.echo(f"  wrote    {w}")
+        for s in report.skipped:
+            typer.echo(f"  skipped  {s}")
+        for c in report.conflicts:
+            typer.echo(f"  conflict {c} — a file already there was not written by tawn")
+        typer.echo(f"\n{len(report.written)} written across {len(report.targets)} agent(s)")
+        return
+
+    if action == "import":
+        report = import_skills(home, dry_run=dry_run)
+        if not report.found:
+            typer.echo("no importable skills found in your other agents")
+            return
+        for n in report.imported:
+            typer.echo(f"  {'would import' if dry_run else 'imported'}  {n}")
+        for s in report.skipped:
+            typer.echo(f"  skipped   {s}")
+        for c in report.conflicts:
+            typer.echo(f"  conflict  {c}")
+        if dry_run:
+            typer.echo("\ndry run — nothing was written")
+        return
+
+    typer.echo(f"unknown action: {action}")
+    raise typer.Exit(1)
+
+
+@app.command("tool")
+def cmd_tool(
+    action: str = typer.Argument("list", help="list | new | show | enable | disable | test | remove"),
+    name: str = typer.Argument(None, help="Tool name, or a description for `new`"),
+    cloud: bool = typer.Option(False, "--cloud", help="Allow a cloud model to generate"),
+) -> None:
+    """Generated tools — describe one, review it, then enable it.
+
+    \b
+      tawn tool new "fetch the NGX price for a ticker"
+      tawn tool list
+      tawn tool show <name>          the manifest and the source
+      tawn tool enable|disable <name>
+      tawn tool test <name>          run its generated smoke test
+      tawn tool remove <name>
+
+    A generated tool is written disabled. It is called by a *model*, on its own
+    initiative, so enabling it is a separate decision you make after reading
+    the source.
+    """
+    from tawn.tools.creator import (
+        CapabilityMismatch, generate_tool, list_tools, read_manifest,
+        read_source, remove_tool, set_enabled, write_tool,
+    )
+    from tawn.tools.loader import run_tool_test
+
+    home = tawn_home()
+
+    if action == "list":
+        tools = list_tools(home)
+        if not tools:
+            typer.echo('no generated tools — `tawn tool new "what it should do"`')
+            return
+        for m in tools:
+            state = "on " if m.get("enabled") else "off"
+            caps = ",".join(m.get("capabilities") or []) or "-"
+            typer.echo(f"  {m['name']:<24} {state}  {caps:<18} {m.get('description', '')[:50]}")
+        return
+
+    if action == "new":
+        if not name:
+            typer.echo('usage: tawn tool new "what it should do"')
+            raise typer.Exit(1)
+        try:
+            from tawn.model.router import default_router
+
+            manifest, impl, test = generate_tool(name, default_router(home), allow_cloud=cloud)
+            path = write_tool(home, manifest["name"], manifest, impl, test)
+        except CapabilityMismatch as exc:
+            typer.echo(f"rejected: {exc}")
+            raise typer.Exit(1) from exc
+        except Exception as exc:
+            typer.echo(f"could not generate a tool: {exc}")
+            raise typer.Exit(1) from exc
+        typer.echo(
+            f"wrote {path}\n"
+            f"capabilities: {', '.join(manifest['capabilities']) or 'none'}\n\n"
+            f"It is DISABLED. Read the source first:\n"
+            f"  tawn tool show {manifest['name']}\n"
+            f"then:\n"
+            f"  tawn tool enable {manifest['name']}"
+        )
+        return
+
+    if action == "show":
+        if not name:
+            typer.echo("usage: tawn tool show <name>")
+            raise typer.Exit(1)
+        manifest = read_manifest(home, name)
+        if manifest is None:
+            typer.echo(f"no tool named {name!r}")
+            raise typer.Exit(1)
+        import yaml as _yaml
+
+        typer.echo(_yaml.safe_dump(manifest, sort_keys=False))
+        typer.echo("─" * 60)
+        typer.echo(read_source(home, name) or "(no source)")
+        return
+
+    if action in ("enable", "disable"):
+        if not name:
+            typer.echo(f"usage: tawn tool {action} <name>")
+            raise typer.Exit(1)
+        if not set_enabled(home, name, action == "enable"):
+            typer.echo(f"no tool named {name!r}")
+            raise typer.Exit(1)
+        typer.echo(f"{name} {action}d")
+        if action == "enable":
+            manifest = read_manifest(home, name) or {}
+            caps = manifest.get("capabilities") or []
+            if caps:
+                typer.echo(
+                    f"it needs {', '.join(caps)} — it will not run unless your "
+                    "grants allow that"
+                )
+        return
+
+    if action == "test":
+        if not name:
+            typer.echo("usage: tawn tool test <name>")
+            raise typer.Exit(1)
+        ok, output = run_tool_test(home, name)
+        typer.echo(output)
+        raise typer.Exit(0 if ok else 1)
+
+    if action == "remove":
+        if not name:
+            typer.echo("usage: tawn tool remove <name>")
+            raise typer.Exit(1)
+        typer.echo(f"removed {name}" if remove_tool(home, name) else f"no tool named {name!r}")
+        return
+
+    typer.echo(f"unknown action: {action}")
+    raise typer.Exit(1)

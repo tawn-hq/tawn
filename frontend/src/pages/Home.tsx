@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { NavBar, Button, Badge, Logo, ThemeToggle } from '../ds'
+import { useErrors } from '../components/Errors'
 
 function useIsMobile() {
   const [m, setM] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640)
@@ -92,12 +93,14 @@ function EntityGraph({ size }: { size: number }) {
 }
 
 function InstallTabs() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const [active, setActive] = useState(0)
   const [copied, setCopied] = useState(false)
   const method = INSTALL_METHODS[active]
 
   function copy() {
-    navigator.clipboard?.writeText(method.cmd).catch(() => {})
+    navigator.clipboard?.writeText(method.cmd).catch(reportError)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -229,7 +232,7 @@ export default function Home() {
         <InstallTabs />
         <div style={{ marginTop: 20, display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
           <Button variant="secondary" size="sm" onClick={() => navigate('/setup')}>run setup wizard →</Button>
-          <a href="https://github.com/tawn-ai/tawn" target="_blank" rel="noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: 'var(--tawn-text-2)', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', padding: '8px 18px', background: 'var(--tawn-raised)', textDecoration: 'none' }}>
+          <a href="https://github.com/tawn-hq/tawn" target="_blank" rel="noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: 'var(--tawn-text-2)', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', padding: '8px 18px', background: 'var(--tawn-raised)', textDecoration: 'none' }}>
             view on GitHub
           </a>
         </div>
@@ -246,8 +249,8 @@ export default function Home() {
 
       <footer style={{ borderTop: '1px solid var(--tawn-line)', padding: '24px', textAlign: 'center', fontSize: 12, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)', display: 'flex', flexWrap: 'wrap', gap: 16, justifyContent: 'center', alignItems: 'center' }}>
         <span>tawn</span>
-        <a href="https://github.com/tawn-ai/tawn" target="_blank" rel="noreferrer" style={{ color: 'var(--tawn-text-3)', textDecoration: 'none' }}>github</a>
-        <a href="https://github.com/tawn-ai/tawn/issues" target="_blank" rel="noreferrer" style={{ color: 'var(--tawn-text-3)', textDecoration: 'none' }}>issues</a>
+        <a href="https://github.com/tawn-hq/tawn" target="_blank" rel="noreferrer" style={{ color: 'var(--tawn-text-3)', textDecoration: 'none' }}>github</a>
+        <a href="https://github.com/tawn-hq/tawn/issues" target="_blank" rel="noreferrer" style={{ color: 'var(--tawn-text-3)', textDecoration: 'none' }}>issues</a>
         <span>read-only on money, always</span>
       </footer>
     </div>

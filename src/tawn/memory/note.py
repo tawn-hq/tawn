@@ -34,9 +34,14 @@ def note(
     notes_dir.mkdir(parents=True, exist_ok=True)
     path = notes_dir / f"{today}.md"
 
+    from tawn.memory.notes import new_note_id
+
     fm: dict = {
         "type": type,
         "asof": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # A stable handle so the note can be edited or deleted later. Day
+        # files are append-only, so position alone is not an identity.
+        "note_id": new_note_id(),
     }
     if domain:
         fm["domain"] = domain

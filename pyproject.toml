@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tawn"
-version = "0.1.0"
+version = "0.3.0"
 description = "Tawn — the personal digital twin. Local-first memory and context core for your work, wealth, research, and academic life."
 readme = "README.md"
 license = { text = "MIT" }
@@ -36,6 +36,7 @@ dependencies = [
     "PyYAML>=6.0",
     "typer>=0.12",
     "SQLAlchemy>=2.0",
+    "alembic>=1.13",
     "psycopg[binary]>=3.1",
     "httpx>=0.27",
     "rich>=13.7",
@@ -55,11 +56,32 @@ gemini     = ["google-genai>=1.0"]
 ollama     = ["ollama>=0.4"]
 vectors    = ["pgvector>=0.3"]
 mcp        = ["fastmcp>=2.0"]
+
+# Document parsing. Office and OpenDocument formats need nothing — they are
+# ZIP+XML, which the stdlib reads. These cover the formats it genuinely cannot.
+parsing = [
+    "pymupdf>=1.24",      # PDF — fastest, best layout fidelity
+    "pypdf>=4.0",         # PDF fallback, pure Python
+    "beautifulsoup4>=4.12",  # better HTML text extraction than regex
+    "striprtf>=0.0.26",   # RTF
+    "chardet>=5.2",       # encoding detection for legacy text
+]
+# OCR — tier 2, for scanned pages and images. Needs the system `tesseract`
+# binary as well: `apt install tesseract-ocr` / `brew install tesseract`.
+ocr = [
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0",
+    "pymupdf>=1.24",      # rasterises PDF pages for OCR
+]
+
 # convenience meta-extras
 providers  = ["anthropic>=0.100", "openai>=2.0", "google-genai>=1.0", "ollama>=0.4"]
 full       = [
     "anthropic>=0.100", "openai>=2.0", "google-genai>=1.0",
     "ollama>=0.4", "pgvector>=0.3", "fastmcp>=2.0",
+    "pymupdf>=1.24", "pypdf>=4.0", "beautifulsoup4>=4.12",
+    "striprtf>=0.0.26", "chardet>=5.2",
+    "pytesseract>=0.3.10", "Pillow>=10.0",
 ]
 dev = ["pytest>=8.0", "respx>=0.21"]
 
@@ -85,6 +107,12 @@ where = ["src"]
 tawn = [
     "web/dist/**/*",
     "web/dist/*",
+    # migrations must ship in the wheel — resolving them from the repo root
+    # works in an editable checkout and breaks for `pip install tawn`
+    "migrations/alembic.ini",
+    "migrations/env.py",
+    "migrations/script.py.mako",
+    "migrations/versions/*.py",
 ]
 
 [tool.pytest.ini_options]

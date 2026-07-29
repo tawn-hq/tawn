@@ -1,131 +1,31 @@
 """Wiki generation with atomic swap.
 
-Two public surfaces:
+On-disk layout — the only one that has ever existed:
 
-1. Domain-indexed generation (plan spec):
-   generate_domain_index(domain, entities, recent_chunks, wiki_dir, staging_dir, router)
-   atomic_swap(staging_dir, wiki_dir)
+    wiki/<domain>/index.md     per-domain knowledge index
+    wiki/entities/<Name>.md    per-entity page, Obsidian-compatible
+    wiki/links.json            graph data source
+    wiki/conflicts.md          conflict log (written by conflicts.py)
 
-2. Full-corpus generation (used by legacy compiler path):
-   generate_wiki(chunks, entities, wiki_dir)
+Pages use `[[wikilinks]]` so the vault stays navigable in Obsidian, while
+`links.json` gives the web graph a machine-readable source — the viewer never
+parses markdown to find edges.
 """
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
-from collections import defaultdict
 from pathlib import Path
 
-from tawn.compiler.parser import ParsedChunk
-from tawn.memory.schema import Entity
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9 _.\-]")
 
 
-def _domain_page(domain: str, chunks: list[ParsedChunk]) -> str:
-    lines = [f"# Domain: {domain}\n"]
-    for c in sorted(chunks, key=lambda x: x.source_path):
-        lines.append(f"## `{c.source_path}` (chunk {c.chunk_index})")
-        preview = c.content[:300].strip()
-        if len(c.content) > 300:
-            preview += "…"
-        lines.append(f"\n{preview}\n")
-    return "\n".join(lines)
-
-
-def _entity_page(entity: Entity, chunks: list[ParsedChunk]) -> str:
-    lines = [f"# Entity: {entity.canonical}\n"]
-    if entity.domain:
-        lines.append(f"**Domain:** {entity.domain}")
-    if entity.confidence is not None:
-        lines.append(f"**Confidence:** {entity.confidence}")
-    lines.append("")
-    if chunks:
-        lines.append("## References\n")
-        for c in chunks:
-            lines.append(f"- `{c.source_path}` chunk {c.chunk_index}")
-    return "\n".join(lines)
-
-
-def _index_page(domains: list[str], entities: list[Entity]) -> str:
-    lines = ["# Tawn Wiki\n"]
-    if domains:
-        lines.append("## Domains\n")
-        for d in sorted(domains):
-            lines.append(f"- [domains/{d}](domains/{d}.md)")
-    lines.append("")
-    if entities:
-        lines.append("## Entities\n")
-        for e in sorted(entities, key=lambda x: x.canonical):
-            lines.append(f"- [entities/{e.canonical}](entities/{e.canonical}.md)")
-    return "\n".join(lines)
-
-
-def generate_wiki(
-    chunks: list[ParsedChunk],
-    entities: list[Entity],
-    wiki_dir: Path,
-) -> None:
-    """Write wiki pages to .staging/, then atomically swap into wiki_dir."""
-    staging = wiki_dir / ".staging"
-    if staging.exists():
-        shutil.rmtree(staging)
-    (staging / "domains").mkdir(parents=True)
-    (staging / "entities").mkdir(parents=True)
-
-    # Group chunks by domain
-    by_domain: dict[str, list[ParsedChunk]] = defaultdict(list)
-    for chunk in chunks:
-        domain = chunk.frontmatter.get("domain") or "unknown"
-        by_domain[domain].append(chunk)
-
-    # Domain pages
-    for domain, domain_chunks in by_domain.items():
-        (staging / "domains" / f"{domain}.md").write_text(
-            _domain_page(domain, domain_chunks)
-        )
-
-    # Entity pages — chunks that mention the entity name
-    for entity in entities:
-        name_lower = entity.canonical.lower()
-        related = [
-            c for c in chunks if name_lower in c.content.lower()
-        ]
-        (staging / "entities" / f"{entity.canonical}.md").write_text(
-            _entity_page(entity, related)
-        )
-
-    # Index
-    (staging / "index.md").write_text(
-        _index_page(list(by_domain.keys()), entities)
-    )
-
-    # Atomic swap: move staged files into wiki_dir
-    # Preserve conflicts.md from live wiki if it exists
-    conflicts_src = wiki_dir / "conflicts.md"
-    conflicts_txt = conflicts_src.read_text() if conflicts_src.exists() else None
-
-    # Replace live wiki contents with staging
-    for item in wiki_dir.iterdir():
-        if item.name == ".staging":
-            continue
-        if item.is_dir():
-            shutil.rmtree(item)
-        else:
-            item.unlink()
-
-    for item in staging.iterdir():
-        shutil.move(str(item), wiki_dir / item.name)
-
-    # Restore conflicts.md
-    if conflicts_txt is not None:
-        (wiki_dir / "conflicts.md").write_text(conflicts_txt)
-
-    shutil.rmtree(staging)
-
-
-# ── Domain-indexed API (plan spec) ────────────────────────────────────────────
+# ── Domain indexes ────────────────────────────────────────────────────────────
 
 def _template_index(domain: str, entities: list[str], recent_chunks: list[str]) -> str:
-    entity_list = "\n".join(f"- {e}" for e in entities[:20]) or "_(none yet)_"
+    entity_list = "\n".join(f"- {wikilink(e)}" for e in entities[:20]) or "_(none yet)_"
     recent_list = "\n".join(
         f"- {c[:120].replace(chr(10), ' ')}..." if len(c) > 120 else f"- {c}"
         for c in recent_chunks[:10]
@@ -148,7 +48,7 @@ def generate_domain_index(
 ) -> None:
     """Write domain index.md to staging_dir/<domain>/index.md.
 
-    Uses router for LLM summary when available; falls back to template.
+    Uses router for an LLM summary when available; falls back to template.
     """
     domain_staging = staging_dir / domain
     domain_staging.mkdir(parents=True, exist_ok=True)
@@ -178,20 +78,138 @@ def generate_domain_index(
     index_path.write_text(_template_index(domain, entities, recent_chunks))
 
 
-def atomic_swap(staging_dir: Path, wiki_dir: Path) -> None:
-    """Move all domain dirs from staging_dir into wiki_dir atomically.
+# ── Entity pages ──────────────────────────────────────────────────────────────
 
-    Each domain moves individually; failures leave prior wiki content intact.
+def wikilink(name: str) -> str:
+    """Obsidian-compatible link. The vault and the web viewer read one file."""
+    return f"[[{name}]]"
+
+
+def _safe_filename(name: str) -> str:
+    cleaned = _UNSAFE_NAME.sub("-", name).strip() or "unnamed"
+    return f"{cleaned[:120]}.md"
+
+
+def generate_entity_page(
+    entity,
+    related: list[tuple[str, str]],
+    backlinks: list[str],
+    staging_dir: Path,
+) -> Path:
+    """Write one entity page to staging_dir/entities/.
+
+    `related` is [(name, relation)]; `backlinks` names the entities pointing
+    *at* this one. Backlinks are listed as text rather than only drawn in the
+    graph — they are what makes a wiki compound, and they need to stay
+    readable and searchable, not only spatial.
+    """
+    out_dir = staging_dir / "entities"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / _safe_filename(entity.canonical)
+
+    lines = ["---", f"entity: {entity.canonical}"]
+    if entity.domain:
+        lines.append(f"domain: {entity.domain}")
+    if entity.confidence:
+        lines.append(f"confidence: {entity.confidence}")
+    lines += ["---", "", f"# {entity.canonical}", ""]
+
+    if related:
+        lines += ["## Related", ""]
+        lines += [f"- {relation} → {wikilink(name)}" for name, relation in related]
+        lines.append("")
+
+    if backlinks:
+        lines += ["## Linked from", ""]
+        lines += [f"- {wikilink(name)}" for name in backlinks]
+        lines.append("")
+
+    lines += ["---", "_Auto-generated by Tawn. Edit `raw/` sources to update._"]
+    path.write_text("\n".join(lines))
+    return path
+
+
+def generate_links_index(session, staging_dir: Path) -> Path:
+    """Emit links.json — the graph's data source."""
+    from tawn.memory.schema import Entity as _Entity, EntityEdge as _EntityEdge
+
+    entities = session.query(_Entity).all()
+    edges = session.query(_EntityEdge).all()
+    ids = {e.id for e in entities}
+
+    payload = {
+        "nodes": [
+            {"id": e.id, "label": e.canonical, "domain": e.domain,
+             "confidence": e.confidence}
+            for e in entities
+        ],
+        "links": [
+            {"source": ed.from_entity_id, "target": ed.to_entity_id,
+             "relation": ed.relation, "weight": ed.weight or 1}
+            for ed in edges
+            if ed.from_entity_id in ids and ed.to_entity_id in ids
+        ],
+    }
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    path = staging_dir / "links.json"
+    path.write_text(json.dumps(payload, indent=2))
+    return path
+
+
+# ── Atomic swap ───────────────────────────────────────────────────────────────
+
+# Root-level directories that are not domains and must survive a swap.
+_NON_DOMAIN_DIRS = {"entities"}
+
+
+def atomic_swap(staging_dir: Path, wiki_dir: Path, prune: bool = True) -> None:
+    """Move staged content into wiki_dir, one entry at a time.
+
+    Each entry moves individually, so a failure leaves prior wiki content
+    intact rather than a half-written tree.
     """
     if not staging_dir.exists():
         return
-    for domain_staging in staging_dir.iterdir():
-        if not domain_staging.is_dir() or domain_staging.name.startswith("."):
+
+    # Captured before the move loop empties staging.
+    staged_dirs = {
+        d.name for d in staging_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    }
+
+    for entry in list(staging_dir.iterdir()):
+        if entry.name.startswith("."):
             continue
-        dest = wiki_dir / domain_staging.name
-        tmp = wiki_dir / f".{domain_staging.name}.tmp"
+
+        if not entry.is_dir():
+            # links.json and similar root-level artefacts
+            dest_file = wiki_dir / entry.name
+            if dest_file.exists():
+                dest_file.unlink()
+            shutil.move(str(entry), str(dest_file))
+            continue
+
+        dest = wiki_dir / entry.name
+        tmp = wiki_dir / f".{entry.name}.tmp"
         if dest.exists():
             shutil.move(str(dest), str(tmp))
-        shutil.move(str(domain_staging), str(dest))
+        shutil.move(str(entry), str(dest))
         if tmp.exists():
             shutil.rmtree(tmp)
+
+    # Prune domains that no longer have a staged page — but only when the
+    # caller staged something. An empty staging dir means the run generated
+    # nothing (a compile where no file changed), not that every domain is
+    # gone; pruning on that basis deleted all four domain indexes after an
+    # uneventful compile.
+    if not prune or not staged_dirs:
+        return
+
+    for live in list(wiki_dir.iterdir()):
+        if (
+            live.is_dir()
+            and not live.name.startswith(".")
+            and live.name not in staged_dirs
+            and live.name not in _NON_DOMAIN_DIRS
+        ):
+            shutil.rmtree(live)

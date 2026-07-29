@@ -15,6 +15,7 @@ from tawn.model.breaker import CircuitBreaker
 from tawn.model.keys import get_key
 from tawn.model.ledger import Ledger, estimate_cost
 from tawn.model.types import (
+    ToolsUnsupported,
     ErrorKind,
     Message,
     ModelError,
@@ -33,9 +34,18 @@ class Router:
         ledger: Ledger,
         breakers: dict[str, CircuitBreaker] | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        caller: str = "system",
+        operation: str = "",
+        domain: str | None = None,
     ):
         self.providers = providers
         self.ledger = ledger
+        # Attribution for every call this router makes. Set by whoever builds
+        # it — the CLI, a web route, the enrichment pass — so spend can be
+        # traced back to what asked for it rather than only to a provider.
+        self.caller = caller
+        self.operation = operation
+        self.domain = domain
         self.breakers = breakers if breakers is not None else {
             p.name: CircuitBreaker() for p in providers
         }
@@ -49,21 +59,32 @@ class Router:
         tokens_in = resp.tokens_in if resp else 0
         tokens_out = resp.tokens_out if resp else 0
         model = resp.model if resp else getattr(p, "model", "")
+        cost, priced = estimate_cost(model, tokens_in, tokens_out)
         self.ledger.record(
             provider=p.name,
             model=model,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
-            cost_usd=estimate_cost(model, tokens_in, tokens_out),
+            cost_usd=cost,
             locality=p.locality,
             sensitive=bool(sensitive),
             ok=error is None,
             error=error.kind.value if error else "",
+            caller=self.caller,
+            operation=self.operation,
+            domain=self.domain,
+            priced=priced,
         )
 
-    def _attempt(self, p: Provider, msgs: list[Message], sensitive: bool) -> ModelResponse:
+    def _attempt(
+        self,
+        p: Provider,
+        msgs: list[Message],
+        sensitive: bool,
+        tools: list | None = None,
+    ) -> ModelResponse:
         try:
-            resp = p.complete(msgs)
+            resp = p.complete(msgs, tools=tools) if tools else p.complete(msgs)
         except ModelError as e:
             self._ledger(p, sensitive, None, e)
             self._breaker(p.name).record_failure()
@@ -72,7 +93,12 @@ class Router:
         self._breaker(p.name).record_success()
         return resp
 
-    def complete(self, msgs: list[Message], sensitive: bool = False) -> ModelResponse:
+    def complete(
+        self,
+        msgs: list[Message],
+        sensitive: bool = False,
+        tools: list | None = None,
+    ) -> ModelResponse:
         candidates = [
             p for p in self.providers if not sensitive or p.locality == "local"
         ]
@@ -95,14 +121,23 @@ class Router:
                 )
                 continue
             try:
-                return self._attempt(p, msgs, sensitive)
+                return self._attempt(p, msgs, sensitive, tools)
+            except ToolsUnsupported as e:
+                # Every adapter now falls back to the prompted protocol, so
+                # this is only reachable via a custom Provider implementation.
+                # Fail over without tripping the breaker: the model is not
+                # unhealthy, it just cannot do this.
+                failures.append(
+                    ModelError(str(e), kind=ErrorKind.UNKNOWN, provider=p.name)
+                )
+                continue
             except ModelError as e:
                 failures.append(e)
                 if e.kind is ErrorKind.RATE_LIMIT:
                     # transient — one polite retry on the same provider
                     self._sleep(RATE_LIMIT_BACKOFF_S)
                     try:
-                        return self._attempt(p, msgs, sensitive)
+                        return self._attempt(p, msgs, sensitive, tools)
                     except ModelError as e2:
                         failures.append(e2)
                 # any other kind (or failed retry): fall through to next provider
@@ -221,6 +256,12 @@ def _make_groq(key: str) -> Provider:
     return groq_provider(key)
 
 
+def _make_mistral(key: str) -> Provider:
+    from tawn.model.providers.openai_compat import mistral_provider
+
+    return mistral_provider(key)
+
+
 def _make_grok(key: str) -> Provider:
     from tawn.model.providers.openai_compat import grok_provider
 
@@ -240,6 +281,7 @@ CLOUD_REGISTRY: list[tuple[str, Callable[[str], Provider]]] = [
     ("qwen", _make_qwen),
     ("groq", _make_groq),
     ("grok", _make_grok),
+    ("mistral", _make_mistral),
 ]
 
 
@@ -255,6 +297,7 @@ PROVIDER_MODELS: dict[str, list[str]] = {
     "qwen": ["qwen-max", "qwen-plus", "qwen-turbo"],
     "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
     "grok": ["grok-3", "grok-3-mini", "grok-2"],
+    "mistral": ["mistral-large-latest", "mistral-small-latest", "pixtral-large-latest"],
 }
 
 
@@ -294,17 +337,28 @@ def usable_models(home: Path) -> list[dict]:
     models + installed local models. Rows: {target, provider, model, locality}."""
     from tawn.model.providers.ollama import OllamaProvider
 
+    from tawn.model.discovery import discover_models
+
     rows: list[dict] = []
     for provider_name, _ in CLOUD_REGISTRY:
-        if not get_key(provider_name):
+        key = get_key(provider_name)
+        if not key:
             continue
-        for m in PROVIDER_MODELS.get(provider_name, []):
+        # Ask the provider what it actually offers. PROVIDER_MODELS froze at
+        # whenever it was last edited — OpenAI showed one model while the live
+        # catalogue had moved on several releases — so it is the fallback now,
+        # not the source.
+        models, source = discover_models(provider_name, key, home)
+        for m in models:
             rows.append(
                 {
                     "target": f"{provider_name}/{m}",
                     "provider": provider_name,
                     "model": m,
                     "locality": "cloud",
+                    # So a caller can say whether this is the real catalogue
+                    # or a stale stand-in rather than presenting both alike.
+                    "source": source,
                 }
             )
     for m in OllamaProvider().installed_models():

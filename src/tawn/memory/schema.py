@@ -12,6 +12,8 @@ import os
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
+    Numeric,
     DateTime,
     Float,
     ForeignKey,
@@ -43,13 +45,25 @@ def _locked_embed_dims() -> int:
 
 
 def _vector_column(dims: int | None = None):
-    """Return a pgvector Vector column, or Text on SQLite / unconfigured."""
+    """Return a pgvector Vector column, or Text on SQLite / unconfigured.
+
+    Deliberately *dimensionless*. Pinning the column to one embedder's width
+    meant switching models left the config and the column disagreeing, and
+    every subsequent compile died on `expected 768 dimensions, not 1536`.
+    pgvector accepts `vector` with no width, and Tawn builds no ANN index on
+    this column (only btree on id and group_key), so the fixed width bought
+    nothing and cost a whole class of breakage.
+
+    Rows of differing widths can coexist in storage, but distance operators
+    reject mixed comparisons — so changing embedder still requires a
+    re-embed, which `PUT /api/models/embed` enforces.
+    """
     from tawn.config import settings as _settings
     db_url = os.environ.get("TAWN_DB_URL") or _settings().db_url
     if "postgresql" in db_url:
         try:
             from pgvector.sqlalchemy import Vector
-            return Column(Vector(dims or _locked_embed_dims()), nullable=True)
+            return Column(Vector(dims), nullable=True)
         except ImportError:
             pass
     return Column(Text, nullable=True)
@@ -78,6 +92,25 @@ class Chunk(Base):
         nullable=False,
         default=datetime.datetime.utcnow,
     )
+
+    # ── enrichment (Stage 7) ──────────────────────────────────────────────
+    # Written by the resumable pass in compiler/enrich.py, not by compile.
+    # `enrich_attempts` caps retries: without it a chunk the model reliably
+    # fails to parse would be reselected every 30 minutes forever.
+    title = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    enriched_at = Column(DateTime(timezone=True), nullable=True)
+    enrich_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    group_key = Column(Text, nullable=True, index=True)
+    group_label = Column(Text, nullable=True)
+
+    # Which embedder produced `embedding`. Recorded per row because the
+    # column is dimensionless: vectors of different widths can coexist, but
+    # distance operators reject mixed comparisons, so recall must restrict
+    # itself to rows made by the embedder currently in use — and a re-embed
+    # needs to know what it is replacing.
+    embed_model = Column(String(64), nullable=True, index=True)
+    embed_dims = Column(Integer, nullable=True)
 
 
 class Entity(Base):
@@ -122,6 +155,9 @@ class EntityEdge(Base):
     relation = Column(Text, nullable=False)
     confidence = Column(String(16), nullable=True)
     source_path = Column(Text, nullable=True)
+    # How many times this pairing was seen. Drives edge thickness in the
+    # graph and separates a one-off mention from a real association.
+    weight = Column(Integer, nullable=False, default=1, server_default="1")
 
     from_entity = relationship(
         "Entity", foreign_keys=[from_entity_id], back_populates="outgoing"
@@ -129,6 +165,25 @@ class EntityEdge(Base):
     to_entity = relationship(
         "Entity", foreign_keys=[to_entity_id], back_populates="incoming"
     )
+
+
+class ChunkGroup(Base):
+    """Roll-up header for a feed card. One row per distinct Chunk.group_key.
+
+    Chunks are not the display unit — 26k rows is not a feed anyone reads.
+    A conversation or document is one card, and its title/summary come from
+    a single roll-up model call over its members' summaries.
+    """
+
+    __tablename__ = "chunk_groups"
+
+    group_key = Column(Text, primary_key=True)
+    title = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    domain = Column(String(64), nullable=True)
+    chunk_count = Column(Integer, nullable=False, default=0, server_default="0")
+    enriched_at = Column(DateTime(timezone=True), nullable=True)
+    enrich_attempts = Column(Integer, nullable=False, default=0, server_default="0")
 
 
 class FileState(Base):
@@ -152,3 +207,99 @@ class CompileLog(Base):
     entities_resolved = Column(Integer, nullable=True)
     ok = Column(Boolean, nullable=True)
     error = Column(Text, nullable=True)
+
+
+class ModelCallRollup(Base):
+    """Daily aggregates of model calls — a derived cache over ledger.jsonl.
+
+    The file is the source of truth; this table holds no fact that does not
+    originate there, so any disagreement is resolved by recomputing it rather
+    than reconciling two peers. Recording every embed call takes the ledger
+    from dozens of entries to ~12,000 per rebuild, which the UI must not read
+    line by line.
+    """
+
+    __tablename__ = "model_call_rollups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    day = Column(Date, nullable=False, index=True)
+    provider = Column(String(32), nullable=False)
+    model = Column(String(128), nullable=False)
+    caller = Column(String(16), nullable=False, default="system")
+    operation = Column(String(32), nullable=False, default="")
+    domain = Column(String(64), nullable=True)
+    calls = Column(Integer, nullable=False, default=0)
+    tokens_in = Column(Integer, nullable=False, default=0)
+    tokens_out = Column(Integer, nullable=False, default=0)
+    # Numeric, never float: money summed through binary floating point drifts,
+    # and a cost dashboard that disagrees with its own source is worse than none.
+    cost_usd = Column(Numeric(18, 8), nullable=False, default=0)
+    # Lets a total state its own incompleteness instead of understating.
+    unpriced_calls = Column(Integer, nullable=False, default=0)
+
+
+class ObserverSession(Base):
+    """One project's window of contiguous activity.
+
+    Opened by the first event for a project with no open session, closed by a
+    commit, by idle timeout, or by an explicit review. `note_state` and
+    `note_attempts` give note-writing the same resumable-and-bounded contract
+    enrichment uses: a note that cannot be written is retried on later sweeps
+    and eventually gives up rather than retrying forever.
+    """
+
+    __tablename__ = "observer_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project = Column(String(128), nullable=False, index=True)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    closed_by = Column(String(16), nullable=True)  # commit | idle | manual
+    event_count = Column(Integer, nullable=False, default=0, server_default="0")
+    note_path = Column(Text, nullable=True)
+    # open | pending_note | written | unanalysed | failed
+    note_state = Column(
+        String(16), nullable=False, default="open", server_default="open"
+    )
+    note_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+
+
+class ObservedEvent(Base):
+    """One observed change.
+
+    Deliberately holds no file content — only path, kind and line deltas.
+    Storing diffs would make Tawn an unversioned second copy of the user's
+    source that outlives deletion. Review composition reads the file through
+    the normal grant check instead.
+    """
+
+    __tablename__ = "observed_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(
+        Integer, ForeignKey("observer_sessions.id", ondelete="CASCADE"), index=True
+    )
+    project = Column(String(128), nullable=False, index=True)
+    path = Column(Text, nullable=False)
+    kind = Column(String(16), nullable=False)  # added|modified|deleted|commit
+    lines_added = Column(Integer, nullable=False, default=0, server_default="0")
+    lines_removed = Column(Integer, nullable=False, default=0, server_default="0")
+    actor = Column(
+        String(64), nullable=False, default="unknown", server_default="unknown"
+    )
+    confidence = Column(String(8), nullable=False, default="low", server_default="low")
+    basis = Column(String(16), nullable=False, default="none", server_default="none")
+    ts = Column(DateTime(timezone=True), nullable=False)
+
+
+class LedgerWatermark(Base):
+    """How far the reconciler has read into a ledger file."""
+
+    __tablename__ = "ledger_watermark"
+
+    path = Column(Text, primary_key=True)
+    byte_offset = Column(Integer, nullable=False, default=0)
+    entries_seen = Column(Integer, nullable=False, default=0)
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, default=datetime.datetime.utcnow
+    )

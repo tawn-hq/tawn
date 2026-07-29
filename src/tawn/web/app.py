@@ -42,8 +42,16 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.get("/api/status")
     def status():
+        from tawn.staleness import staleness_report
+
         home = tawn_home()
-        return {"initialized": (home / "raw").is_dir()}
+        # Surfaced here so a browser session can tell it is talking to a
+        # daemon older than the code on disk, rather than concluding a fix
+        # did not work.
+        return {
+            "initialized": (home / "raw").is_dir(),
+            "code": staleness_report(home, "web"),
+        }
 
     @app.get("/api/domains")
     def domains():
@@ -73,6 +81,10 @@ def create_app(engine: Engine) -> FastAPI:
     from tawn.web.routes.memory import router as memory_router
     from tawn.web.routes.federation import router as federation_router
     from tawn.web.routes.update import router as update_router
+    from tawn.web.routes.wiki import router as wiki_router
+    from tawn.web.routes.observability import router as observability_router
+    from tawn.web.routes.observer import router as observer_router
+    from tawn.web.routes.tools import router as tools_router
 
     app.include_router(setup_router, prefix="/api/setup")
     app.include_router(chat_router, prefix="/api/chat")
@@ -83,6 +95,12 @@ def create_app(engine: Engine) -> FastAPI:
     app.include_router(memory_router, prefix="/api")
     app.include_router(federation_router, prefix="/api/federation")
     app.include_router(update_router, prefix="/api/update")
+    # Mounted ahead of the SPA catch-all at the bottom of this function,
+    # or client-side routing swallows it.
+    app.include_router(wiki_router, prefix="/api/wiki")
+    app.include_router(observability_router, prefix="/api/observability")
+    app.include_router(observer_router, prefix="/api/observer")
+    app.include_router(tools_router, prefix="/api/tools")
 
     from fastapi import Depends as _Depends
     from sqlalchemy.orm import Session as _Session
@@ -172,16 +190,56 @@ def create_app(engine: Engine) -> FastAPI:
         model: str
 
     @app.put("/api/models/embed")
-    def set_embed_model(body: EmbedModelBody):
-        from tawn.compiler.embedder import _chain, _write_config, _OLLAMA_MODELS, _OPENAI_MODEL, _GEMINI_DIMS
+    def set_embed_model(body: EmbedModelBody, force: bool = False):
+        """Switch the embedding model.
+
+        Refuses when the corpus already holds vectors of a different width:
+        distance operators reject mixed-width comparisons, so accepting the
+        change would silently break recall until a rebuild. Previously this
+        wrote the new dims and left compile dying on
+        `expected 768 dimensions, not 1536`.
+        """
+        from tawn.compiler.embedder import _chain, _write_config
+        from tawn.memory.schema import Chunk
+
         for model_name, dims, fn in _chain():
-            if model_name == body.model:
+            if model_name != body.model:
+                continue
+            try:
+                vec = fn("test")
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
+
+            new_dims = len(vec)
+            if not force:
+                from tawn.db import make_engine
+                from sqlalchemy.orm import Session as _S
+
                 try:
-                    vec = fn("test")
-                    _write_config(tawn_home(), {"embed_model": model_name, "embed_dims": len(vec)})
-                    return {"ok": True, "model": model_name, "dims": len(vec)}
-                except Exception as exc:
-                    return {"ok": False, "error": str(exc)}
+                    with _S(make_engine()) as s:
+                        existing = (
+                            s.query(Chunk)
+                            .filter(Chunk.embedding.isnot(None))
+                            .count()
+                        )
+                except Exception:
+                    existing = 0
+
+                current_dims = get_embed_model().get("dims") or 0
+                if existing and current_dims and current_dims != new_dims:
+                    return {
+                        "ok": False,
+                        "needs_rebuild": True,
+                        "error": (
+                            f"{existing} chunks are embedded at {current_dims} dimensions; "
+                            f"{model_name} produces {new_dims}. Run `tawn compile --rebuild` "
+                            f"to re-embed, or repeat with force=true to switch now and "
+                            f"leave recall broken until you do."
+                        ),
+                    }
+
+            _write_config(tawn_home(), {"embed_model": model_name, "embed_dims": new_dims})
+            return {"ok": True, "model": model_name, "dims": new_dims}
         return {"ok": False, "error": f"unknown model: {body.model}"}
 
     @app.get("/api/browse/folder")
@@ -260,7 +318,7 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.get("/api/audit/verify")
     def audit_verify():
-        return {"intact": _audit_log().verify_chain()}
+        return _audit_log().verify_chain()
 
     @app.get("/api/audit/export")
     def audit_export(format: str = "json"):

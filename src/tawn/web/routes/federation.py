@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from tawn.capability.audit import AuditLog
+from tawn.capability.audit import AuditLog, audit_path
 from tawn.db import get_session
 from tawn.federation.config import FedSource, load_config, save_config
 from tawn.federation.exporter import export as do_export
@@ -38,7 +38,7 @@ def get_sources(session: Session = Depends(get_session)):
         # never see on its own. Backfill it now instead of waiting for the
         # next full server restart (the only other place this scan runs).
         newly_added_names = ", ".join(s.name for s in load_config(home)[-newly_added:])
-        AuditLog(home / "audit.log").record(
+        AuditLog(audit_path(home)).record(
             "federation.source_discovered", newly_added_names, ok=True,
             detail=f"{newly_added} new source(s) auto-detected", actor="system",
         )
@@ -77,7 +77,7 @@ def add_source(body: AddSourceBody):
         auto_detected=False,
     )
     save_config(home, existing + [new_source])
-    AuditLog(home / "audit.log").record(
+    AuditLog(audit_path(home)).record(
         "federation.source_add", name, ok=True, detail=body.path, actor="web",
     )
     return {"ok": True, "name": name}
@@ -88,7 +88,7 @@ def remove_source(name: str):
     home = tawn_home()
     sources = [s for s in load_config(home) if s.name != name]
     save_config(home, sources)
-    AuditLog(home / "audit.log").record(
+    AuditLog(audit_path(home)).record(
         "federation.source_remove", name, ok=True, actor="web",
     )
     return {"ok": True}

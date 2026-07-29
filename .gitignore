@@ -217,7 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 # gitignore has no trailing comments — pattern must stand alone
-docs/
+documentations/
 
 # tawn runtime state — never in git (PRD §8)
 config.yaml
@@ -225,6 +225,9 @@ grants.yaml
 grants.yaml.sha256
 *.egg-info/
 .venv/
+
+# Brainstorming mockups — local design scratch, not project source
+.superpowers/
 
 # Node.js / frontend (frontend/) — never had a rule; node_modules leaked
 # into `git status` as thousands of untracked files. (frontend/dist/ is

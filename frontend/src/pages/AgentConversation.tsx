@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { marked } from 'marked'
-import AppNav from '../components/AppNav'
 import { Button, Badge } from '../ds'
 import { renderDiagramsIn } from '../lib/diagrams'
 
@@ -79,8 +78,7 @@ export default function AgentConversation() {
   const dom = conv && DOMAINS.includes(conv.domain as Domain) ? conv.domain as Domain : undefined
 
   return (
-    <div style={{ background: 'var(--tawn-bg)', minHeight: '100vh' }}>
-      <AppNav />
+    <>
       <div style={{ maxWidth: 820, margin: '0 auto', padding: '24px 24px 80px' }}>
         <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
           <Button variant="secondary" size="sm" onClick={() => navigate('/agents')}>← back to agents</Button>
@@ -112,6 +110,6 @@ export default function AgentConversation() {
           </>
         )}
       </div>
-    </div>
+    </>
   )
 }

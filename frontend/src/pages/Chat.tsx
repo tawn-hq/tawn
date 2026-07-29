@@ -1,12 +1,12 @@
 import { FormEvent, useEffect, useRef, useState, KeyboardEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import AppNav from '../components/AppNav'
-import { ChatBubble, Button, Checkbox } from '../ds'
-import { type ChatMessage, type ChatAction, streamChat } from '../lib/sse'
+import { ChatBubble, Button } from '../ds'
+import { useErrors } from '../components/Errors'
+import { type ChatMessage, type ChatAction, type ToolTrace, streamChat } from '../lib/sse'
 import {
   listHistory, getHistorySession, type SessionMeta,
   postNote, postRecall, getBrief, postCompile, getCompileStatus,
-  getStatus, getChatModels, type ModelRow,
+  getStatus, getChatModels, uploadAttachment, removeAttachment, type ModelRow,
 } from '../lib/api'
 
 function useIsMobile() {
@@ -48,6 +48,16 @@ const SLASH_CMDS: SlashCmd[] = [
 function matchCmds(input: string): SlashCmd[] {
   const q = input.toLowerCase()
   return SLASH_CMDS.filter((c) => c.cmd.startsWith(q) || (c.cmd + ' ' + (c.args ?? '')).includes(q))
+}
+
+interface Attached {
+  id: string | null
+  name: string
+  status: 'parsing' | 'ready' | 'failed'
+  format?: string
+  chars?: number
+  truncated?: boolean
+  error?: string
 }
 
 // ── Command palette dropdown ──────────────────────────────────────────────────
@@ -125,22 +135,117 @@ function HistoryIcon() {
 
 // ── Mode menu ─────────────────────────────────────────────────────────────────
 
-function ModeMenu({ sensitive, setSensitive, webSearch, setWebSearch }: { sensitive: boolean; setSensitive: (v: boolean) => void; webSearch: boolean; setWebSearch: (v: boolean) => void }) {
+function ToolsMenu({ sensitive, setSensitive, tools, setTools }: { sensitive: boolean; setSensitive: (v: boolean) => void; tools: boolean; setTools: (v: boolean) => void }) {
   const [open, setOpen] = useState(false)
-  const count = (sensitive ? 1 : 0) + (webSearch ? 1 : 0)
+  const row = (on: boolean, name: string, hint: string, toggle: () => void) => (
+    <div
+      key={name}
+      onClick={toggle}
+      style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '9px 12px', cursor: 'pointer', borderRadius: 'var(--tawn-radius-sm)', background: on ? 'var(--tawn-lapis-soft)' : 'transparent' }}
+      onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--tawn-raised)' }}
+      onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent' }}
+    >
+      <span style={{ width: 15, height: 15, marginTop: 1, flexShrink: 0, borderRadius: 4, border: `1px solid ${on ? 'var(--tawn-lapis)' : 'var(--tawn-line)'}`, background: on ? 'var(--tawn-lapis)' : 'transparent', color: '#fff', fontSize: 10, lineHeight: '14px', textAlign: 'center' }}>
+        {on ? '✓' : ''}
+      </span>
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: on ? 600 : 500, color: on ? 'var(--tawn-lapis)' : 'var(--tawn-text)' }}>{name}</span>
+        <span style={{ fontSize: 11.5, color: 'var(--tawn-text-3)', lineHeight: 1.4 }}>{hint}</span>
+      </span>
+    </div>
+  )
+  const count = (tools ? 1 : 0) + (sensitive ? 1 : 0)
   return (
-    <div style={{ position: 'relative', alignSelf: 'center' }}>
+    <div style={{ position: 'relative' }}>
       <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(!open)}>
-        mode{count > 0 ? ` · ${count}` : ''} {open ? '▴' : '▾'}
+        tools{count > 0 ? ` · ${count}` : ''} {open ? '▴' : '▾'}
       </Button>
       {open && (
         <>
           <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19 }} />
-          <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 20, background: 'var(--tawn-surface)', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius)', padding: 10, minWidth: 200, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <Checkbox label="sensitive" hint="blocks cloud models" checked={sensitive} onChange={(e) => setSensitive(e.target.checked)} />
-            <Checkbox label="search the web" hint="adds cited sources" checked={webSearch} onChange={(e) => setWebSearch(e.target.checked)} />
+          <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 20, background: 'var(--tawn-surface)', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius)', padding: 6, minWidth: 290, boxShadow: '0 8px 28px rgba(0,0,0,0.18)' }}>
+            <div style={{ fontSize: 10, fontFamily: 'var(--tawn-font-mono)', letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--tawn-text-3)', padding: '6px 12px 4px' }}>
+              capabilities
+            </div>
+            {row(tools, 'tools', 'search the web, read files and documents, research, draw diagrams', () => setTools(!tools))}
+            <div style={{ height: 1, background: 'var(--tawn-line)', margin: '5px 8px' }} />
+            <div style={{ fontSize: 10, fontFamily: 'var(--tawn-font-mono)', letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--tawn-text-3)', padding: '6px 12px 4px' }}>
+              privacy
+            </div>
+            {row(sensitive, 'sensitive', 'local models only — nothing leaves this machine', () => setSensitive(!sensitive))}
           </div>
         </>
+      )}
+    </div>
+  )
+}
+
+function AttachMenu({ onFile, onFolder }: { onFile: () => void; onFolder: () => void }) {
+  const [open, setOpen] = useState(false)
+  const item = (label: string, hint: string, act: () => void) => (
+    <div
+      onClick={() => { act(); setOpen(false) }}
+      style={{ padding: '9px 12px', cursor: 'pointer', borderRadius: 'var(--tawn-radius-sm)', display: 'flex', flexDirection: 'column', gap: 2 }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--tawn-raised)' }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+    >
+      <span style={{ fontSize: 13, color: 'var(--tawn-text)' }}>{label}</span>
+      <span style={{ fontSize: 11.5, color: 'var(--tawn-text-3)' }}>{hint}</span>
+    </div>
+  )
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-label="attach"
+        title="attach a file or folder"
+        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, flexShrink: 0, border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: open ? 'var(--tawn-lapis-soft)' : 'var(--tawn-surface)', color: open ? 'var(--tawn-lapis)' : 'var(--tawn-text-2)', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}
+      >
+        +
+      </button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19 }} />
+          <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 20, background: 'var(--tawn-surface)', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius)', padding: 6, minWidth: 230, boxShadow: '0 8px 28px rgba(0,0,0,0.18)' }}>
+            {item('attach files', 'any format — PDF, Word, slides, code', onFile)}
+            {item('attach a folder', 'build directories are skipped', onFolder)}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Tool trace ────────────────────────────────────────────────────────────────
+
+function ToolTraceCard({ traces }: { traces: ToolTrace[] }) {
+  const [open, setOpen] = useState(false)
+  if (traces.length === 0) return null
+  return (
+    <div style={{ margin: '6px 0 10px', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-surface)', overflow: 'hidden' }}>
+      <div onClick={() => setOpen(!open)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 11px', cursor: 'pointer', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>used</span>
+        {traces.map((tr, i) => (
+          <span key={i} style={{ fontSize: 11, fontFamily: 'var(--tawn-font-mono)', padding: '2px 8px', borderRadius: 999, border: `1px solid ${tr.ok === false ? 'var(--tawn-crit)' : 'var(--tawn-line)'}`, color: tr.ok === false ? 'var(--tawn-crit)' : 'var(--tawn-text-2)' }}>
+            {tr.name}{tr.ok === false ? ' failed' : ''}
+          </span>
+        ))}
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tawn-text-3)' }}>{open ? '▴' : '▾'}</span>
+      </div>
+      {open && (
+        <div style={{ borderTop: '1px solid var(--tawn-line)', padding: '9px 11px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {traces.map((tr, i) => (
+            <div key={i}>
+              <div style={{ fontSize: 11.5, fontFamily: 'var(--tawn-font-mono)', color: 'var(--tawn-text)', marginBottom: 3 }}>
+                {tr.name}({Object.entries(tr.arguments || {}).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ')})
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--tawn-text-2)', whiteSpace: 'pre-wrap', maxHeight: 180, overflowY: 'auto', lineHeight: 1.55, fontFamily: 'var(--tawn-font-mono)' }}>
+                {tr.result}
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
@@ -159,7 +264,13 @@ function ModelPicker({ models, target, setTarget }: { models: ModelRow[]; target
       {open && (
         <>
           <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19 }} />
-          <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 20, background: 'var(--tawn-surface)', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius)', overflow: 'hidden', minWidth: 260, maxHeight: 280, overflowY: 'auto', boxShadow: '0 4px 16px rgba(0,0,0,0.15)' }}>
+          {/* Opens downward and right-aligned. It used to open upward, from
+              when this sat in the composer at the bottom of the screen; the
+              picker now lives in the header, so upward ran off the top of the
+              viewport and the list was clipped with no way to scroll to it.
+              `maxHeight` is viewport-relative so a long model list always
+              stays on screen. */}
+          <div style={{ position: 'absolute', top: 'calc(100% + 8px)', right: 0, zIndex: 20, background: 'var(--tawn-surface)', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius)', minWidth: 260, maxHeight: 'min(60vh, 420px)', overflowY: 'auto', overscrollBehavior: 'contain', boxShadow: '0 8px 28px rgba(0,0,0,0.18)' }}>
             <div
               onClick={() => { setTarget(null); setOpen(false) }}
               style={{ padding: '9px 14px', cursor: 'pointer', borderBottom: '1px solid var(--tawn-line)', fontSize: 13, color: !target ? 'var(--tawn-lapis)' : 'var(--tawn-text-2)', fontWeight: !target ? 600 : 400, background: !target ? 'var(--tawn-lapis-soft)' : 'transparent' }}
@@ -232,6 +343,8 @@ type PendingAction = { action: ChatAction; state: 'pending' | 'running' | 'appro
 // ── Main chat ─────────────────────────────────────────────────────────────────
 
 export default function Chat() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const navigate = useNavigate()
   const mobile = useIsMobile()
   const [historyOpen, setHistoryOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 640)
@@ -240,20 +353,22 @@ export default function Chat() {
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [sensitive, setSensitive] = useState(false)
-  const [webSearch, setWebSearch] = useState(false)
+  const [tools, setTools] = useState(true)
+  const [toolTraces, setToolTraces] = useState<ToolTrace[]>([])
   const [target, setTarget] = useState<string | null>(null)
   const [models, setModels] = useState<ModelRow[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showPalette, setShowPalette] = useState(false)
-  const [attachments, setAttachments] = useState<{ name: string; content: string }[]>([])
+  const [attachments, setAttachments] = useState<Attached[]>([])
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const folderRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    listHistory().then(setSessions).catch(() => {})
-    getChatModels().then(setModels).catch(() => {})
+    listHistory().then(setSessions).catch(reportError)
+    getChatModels().then(setModels).catch(reportError)
     // Pick up "continue in chat" payload from federation viewer
     const stored = sessionStorage.getItem('tawn_continue_history')
     if (stored) {
@@ -308,28 +423,58 @@ export default function Chat() {
 
   // ── @file attachment ──────────────────────────────────────────────────────
 
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  //: Folder attachment caps. A source tree holds thousands of files, and
+  //: attaching all of them would blow the model's context and the user's bill.
+  const MAX_FOLDER_FILES = 40
+  const SKIP_DIRS = ['node_modules', '.git', 'dist', 'build', '__pycache__', '.venv', 'venv', 'target']
+
+  //: Each file is parsed server-side the moment it is attached — PDFs, Word,
+  //: spreadsheets and scans all go through the real parser rather than being
+  //: read as text — so sending is instant no matter how large the document.
+  async function addFiles(files: File[]) {
+    for (const file of files) {
+      const pending: Attached = { id: null, name: file.name, status: 'parsing' }
+      setAttachments((prev) => [...prev, pending])
+      const meta = await uploadAttachment(file)
+      setAttachments((prev) => prev.map((a) =>
+        a === pending || (a.id === null && a.name === file.name && a.status === 'parsing')
+          ? meta.ok
+            ? { id: meta.id!, name: meta.name ?? file.name, status: 'ready',
+                format: meta.format, chars: meta.chars, truncated: meta.truncated }
+            : { id: null, name: file.name, status: 'failed', error: meta.error }
+          : a))
+    }
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])
-    files.forEach((file) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        const content = reader.result as string
-        setAttachments((prev) => [...prev, { name: file.name, content }])
-        // also inject @filename into input
-        setInput((prev) => prev.replace(/@\S*$/, '') + `@${file.name} `)
-      }
-      reader.readAsText(file)
-    })
     e.target.value = ''
+    await addFiles(files)
+  }
+
+  async function handleFolderChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const all = Array.from(e.target.files ?? [])
+    e.target.value = ''
+    if (all.length === 0) return
+    // Build directories are noise nobody means to attach.
+    const useful = all.filter((f) => {
+      const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name
+      return !SKIP_DIRS.some((d) => rel.split('/').includes(d))
+    })
+    await addFiles(useful.slice(0, MAX_FOLDER_FILES))
+  }
+
+  async function dropAttachment(index: number) {
+    const target = attachments[index]
+    setAttachments((prev) => prev.filter((_, j) => j !== index))
+    if (target?.id) removeAttachment(target.id).catch(reportError)
   }
 
   function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const val = e.target.value
     setInput(val)
-    // trigger file picker when @ is typed at end
-    if (val.endsWith('@')) {
-      fileRef.current?.click()
-    }
+    // Attachment is the + button now: a stray @ in ordinary prose used to
+    // pop a file dialog mid-sentence.
   }
 
   // ── Slash command execution ───────────────────────────────────────────────
@@ -526,24 +671,23 @@ export default function Chat() {
       return
     }
 
-    // build content with attachments
-    let content = text
-    if (attachments.length) {
-      const atBlock = attachments.map((a) => `[attached: ${a.name}]\n${a.content}`).join('\n\n---\n\n')
-      content = `${atBlock}\n\n---\n\n${text}`
-      setAttachments([])
-    }
+    // Attachments travel as ids. Their text was parsed on attach and is
+    // injected server-side for this turn only, so a large document never
+    // enters the history and never gets re-sent on later turns.
+    const attachIds = attachments.filter((a) => a.id).map((a) => a.id!)
+    if (attachments.length) setAttachments([])
 
-    const userMsg: Msg = { role: 'user', content: text } // show clean text in UI
-    const apiMsg: ChatMessage = { role: 'user', content } // full content with attachments to API
+    const userMsg: Msg = { role: 'user', content: text }
+    const apiMsg: ChatMessage = { role: 'user', content: text }
     const history = [...messages.filter((m) => m.role !== 'system' && !m.streaming).map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })), apiMsg]
     setMessages((prev) => [...prev, userMsg, { role: 'assistant', content: '', streaming: true }])
     setPendingActions([])
+    setToolTraces([])
     setBusy(true)
 
     try {
       let acc = ''
-      for await (const chunk of streamChat(history, sensitive, target, activeId)) {
+      for await (const chunk of streamChat(history, sensitive, target, activeId, tools, attachIds)) {
         if (chunk.session_id && chunk.session_id !== activeId) {
           setActiveId(chunk.session_id)
           const title = chunk.title ?? 'chat'
@@ -555,6 +699,8 @@ export default function Chat() {
           continue
         }
         if (chunk.error) { setError(chunk.error); break }
+        if (chunk.tool) { setToolTraces((prev) => [...prev, chunk.tool!]); continue }
+        if (chunk.notice) { pushSystem(chunk.notice); continue }
         if (chunk.action) {
           const id = `${chunk.action.kind}-${Date.now()}`
           setPendingActions((prev) => [...prev, { action: chunk.action!, state: 'pending', id }])
@@ -585,9 +731,15 @@ export default function Chat() {
   }
 
   return (
-    <div style={{ background: 'var(--tawn-bg)', display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <AppNav />
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 56px)' }}>
       <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={handleFileChange} />
+      <input
+        ref={folderRef}
+        type="file"
+        style={{ display: 'none' }}
+        onChange={handleFolderChange}
+        {...{ webkitdirectory: '', directory: '' } as Record<string, string>}
+      />
       <div style={{ flex: 1, display: 'flex', minHeight: 0, maxWidth: 1040, width: '100%', margin: '0 auto', position: 'relative' }}>
         {/* Desktop: normal flex column that collapses to 0 width — panel
             stays in the layout flow, nothing overlaps. Mobile: fixed overlay
@@ -621,6 +773,9 @@ export default function Chat() {
             <div style={{ fontSize: 12, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>
               {activeId ? `session ${activeId.slice(0, 8)}` : 'new chat'}
             </div>
+            <div style={{ marginLeft: 'auto' }}>
+              <ModelPicker models={models} target={target} setTarget={setTarget} />
+            </div>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {/* spacer pushes messages to bottom when chat is short */}
@@ -628,7 +783,7 @@ export default function Chat() {
             {messages.length === 0 && (
               <div style={{ textAlign: 'center', padding: '40px 0' }}>
                 <div style={{ fontSize: 13, color: 'var(--tawn-text-3)', marginBottom: 10 }}>ask your twin anything — it recalls across all four domains.</div>
-                <div style={{ fontSize: 11, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>type / for commands · @ to attach a file</div>
+                <div style={{ fontSize: 11, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>type / for commands · + to attach a file or folder</div>
               </div>
             )}
             {messages.map((m, i) => {
@@ -641,6 +796,7 @@ export default function Chat() {
               }
               return <ChatBubble key={i} role={m.role} streaming={m.streaming} time={m.time}>{m.content}</ChatBubble>
             })}
+            <ToolTraceCard traces={toolTraces} />
             {pendingActions.map((pa) => (
               <ActionCard
                 key={pa.id}
@@ -657,34 +813,50 @@ export default function Chat() {
           {/* attachment pills */}
           {attachments.length > 0 && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '8px 0 4px' }}>
-              {attachments.map((a, i) => (
-                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontFamily: 'var(--tawn-font-mono)', padding: '3px 8px', background: 'var(--tawn-lapis-soft)', color: 'var(--tawn-lapis)', borderRadius: 999, border: '1px solid var(--tawn-lapis)' }}>
-                  @{a.name}
-                  <span onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))} style={{ cursor: 'pointer', color: 'var(--tawn-text-3)', lineHeight: 1 }}>✕</span>
-                </span>
-              ))}
+              {attachments.map((a, i) => {
+                const failed = a.status === 'failed'
+                const parsing = a.status === 'parsing'
+                const colour = failed ? 'var(--tawn-crit)' : parsing ? 'var(--tawn-text-3)' : 'var(--tawn-lapis)'
+                return (
+                  <span
+                    key={i}
+                    title={failed ? a.error : a.truncated ? 'truncated to fit the model context' : undefined}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontFamily: 'var(--tawn-font-mono)', padding: '3px 9px', background: failed || parsing ? 'transparent' : 'var(--tawn-lapis-soft)', color: colour, borderRadius: 999, border: `1px solid ${colour}` }}
+                  >
+                    {a.name}
+                    {parsing && <span style={{ color: 'var(--tawn-text-3)' }}>reading…</span>}
+                    {a.status === 'ready' && (
+                      <span style={{ color: 'var(--tawn-text-3)' }}>
+                        {a.format}{a.chars ? ` · ${a.chars.toLocaleString()} chars` : ''}{a.truncated ? ' · trimmed' : ''}
+                      </span>
+                    )}
+                    {failed && <span style={{ color: 'var(--tawn-crit)' }}>failed</span>}
+                    <span onClick={() => dropAttachment(i)} style={{ cursor: 'pointer', color: 'var(--tawn-text-3)', lineHeight: 1 }}>✕</span>
+                  </span>
+                )
+              })}
             </div>
           )}
 
           <form onSubmit={send} style={{ position: 'relative', display: 'flex', gap: 8, alignItems: 'flex-end', borderTop: '1px solid var(--tawn-line)', padding: '14px 0', marginTop: 12 }}>
             {showPalette && <CommandPalette input={input} onSelect={(cmd) => setInput(cmd)} />}
-            <ModelPicker models={models} target={target} setTarget={setTarget} />
-            <ModeMenu sensitive={sensitive} setSensitive={setSensitive} webSearch={webSearch} setWebSearch={setWebSearch} />
+            <AttachMenu onFile={() => fileRef.current?.click()} onFolder={() => folderRef.current?.click()} />
+            <ToolsMenu sensitive={sensitive} setSensitive={setSensitive} tools={tools} setTools={setTools} />
             <textarea
               value={input}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder="Message your twin… (/ for commands · @ to attach)"
+              placeholder="Message your twin… (/ for commands)"
               rows={2}
               disabled={busy}
               style={{ flex: 1, fontFamily: 'var(--tawn-font-sans)', fontSize: 14, padding: '9px 12px', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-raised)', color: 'var(--tawn-text)', resize: 'none', outline: 'none', lineHeight: 1.5, boxSizing: 'border-box' }}
             />
-            <Button type="submit" disabled={busy || !input.trim()}>
+            <Button type="submit" disabled={busy || !input.trim() || attachments.some((a) => a.status === 'parsing')}>
               {busy ? '…' : 'send'}
             </Button>
           </form>
           <p style={{ fontSize: 12, color: 'var(--tawn-text-3)', padding: '0 0 16px', fontFamily: 'var(--tawn-font-mono)' }}>
-            enter to send · shift+enter newline · @ attach file · / commands
+            enter to send · shift+enter newline · + attach · / commands
           </p>
         </div>
       </div>

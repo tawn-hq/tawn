@@ -33,13 +33,42 @@ class AnthropicProvider:
         for m in msgs:
             if m.role == "system":
                 system = m.content if system is None else f"{system}\n{m.content}"
+            elif m.images:
+                # Vision: image blocks precede the text so the model sees what
+                # the instruction refers to before reading the instruction.
+                blocks = [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": img.get("media_type", "image/png"),
+                            "data": img.get("data", ""),
+                        },
+                    }
+                    for img in m.images
+                ]
+                if m.content:
+                    blocks.append({"type": "text", "text": m.content})
+                messages.append({"role": m.role, "content": blocks})
             else:
                 messages.append({"role": m.role, "content": m.content})
         return system, messages
 
-    def complete(self, msgs: list[Message], model: str | None = None) -> ModelResponse:
+    def complete(
+        self,
+        msgs: list[Message],
+        model: str | None = None,
+        tools: list | None = None,
+    ) -> ModelResponse:
         model = model or self.model
         system, messages = self._split(msgs)
+        use_tools = bool(tools) and model not in self._NO_NATIVE_TOOLS
+        if use_tools:
+            # Tool calls and results ride as content blocks here, which the
+            # plain text split cannot express.
+            from tawn.model.toolwire import anthropic_messages
+
+            messages = anthropic_messages(msgs)
         kwargs: dict = {
             "model": model,
             "max_tokens": 16000,
@@ -48,6 +77,59 @@ class AnthropicProvider:
         }
         if system is not None:
             kwargs["system"] = system
+        if use_tools:
+            from tawn.model.toolwire import anthropic_tools
+
+            kwargs["tools"] = anthropic_tools(tools)
+        elif tools:
+            return self._complete_prompted(msgs, model, tools, system)
+        try:
+            resp = self._client.messages.create(**kwargs)
+        except Exception as exc:
+            if use_tools and _is_unsupported_tools_error(exc):
+                self._NO_NATIVE_TOOLS.add(model)
+                return self._complete_prompted(msgs, model, tools, system)
+            raise ModelError(
+                self._redact(f"anthropic: {exc}"),
+                kind=self.classify_error(exc),
+                provider=self.name,
+            ) from exc
+        text = "".join(b.text for b in resp.content if b.type == "text")
+        usage = getattr(resp, "usage", None)
+        tool_calls = []
+        if use_tools:
+            from tawn.model.toolwire import anthropic_calls
+
+            tool_calls = anthropic_calls(resp)
+        return ModelResponse(
+            text=text,
+            model=model,
+            provider=self.name,
+            tokens_in=getattr(usage, "input_tokens", 0) or 0,
+            tokens_out=getattr(usage, "output_tokens", 0) or 0,
+            tool_calls=tool_calls,
+        )
+
+    #: Models whose endpoint rejected the tools API, so the next call uses the
+    #: prompted protocol directly.
+    _NO_NATIVE_TOOLS: set[str] = set()
+
+    def _complete_prompted(
+        self, msgs: list[Message], model: str, tools: list, system: str | None
+    ) -> ModelResponse:
+        """Tools described in the prompt, for a model with no tools API."""
+        from tawn.model.prompted import inject_tools, parse_prompted_calls
+
+        prepared = inject_tools(msgs, tools)
+        sys_text, messages = self._split(prepared)
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": 16000,
+            "thinking": {"type": "adaptive"},
+            "messages": messages,
+        }
+        if sys_text is not None:
+            kwargs["system"] = sys_text
         try:
             resp = self._client.messages.create(**kwargs)
         except Exception as exc:
@@ -56,14 +138,16 @@ class AnthropicProvider:
                 kind=self.classify_error(exc),
                 provider=self.name,
             ) from exc
-        text = "".join(b.text for b in resp.content if b.type == "text")
+        raw = "".join(b.text for b in resp.content if b.type == "text")
+        calls, cleaned = parse_prompted_calls(raw)
         usage = getattr(resp, "usage", None)
         return ModelResponse(
-            text=text,
+            text=cleaned,
             model=model,
             provider=self.name,
             tokens_in=getattr(usage, "input_tokens", 0) or 0,
             tokens_out=getattr(usage, "output_tokens", 0) or 0,
+            tool_calls=calls,
         )
 
     def stream_complete(self, msgs: list[Message], model: str | None = None) -> Iterator[StreamChunk]:
@@ -125,3 +209,15 @@ class AnthropicProvider:
         if isinstance(exc, anthropic_sdk.APIConnectionError):
             return ErrorKind.SERVER_ERROR
         return ErrorKind.UNKNOWN
+
+
+def _is_unsupported_tools_error(exc: Exception) -> bool:
+    """Whether the endpoint rejected the *tools API* rather than the request."""
+    text = str(exc).lower()
+    return "tool" in text and any(
+        phrase in text
+        for phrase in (
+            "does not support", "not supported", "unsupported",
+            "unrecognized", "unknown parameter", "invalid",
+        )
+    )

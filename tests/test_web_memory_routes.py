@@ -65,7 +65,7 @@ def test_post_recall_empty(mock_embed, client):
     assert data["chunks"] == []
 
 
-@patch("tawn.compiler.compiler.embed_text", side_effect=EmbedError("no embed"))
+@patch("tawn.compiler.compiler.embed_texts", side_effect=EmbedError("no embed"))
 def test_post_compile(mock_embed, client):
     resp = client.post("/api/compile")
     assert resp.status_code == 200

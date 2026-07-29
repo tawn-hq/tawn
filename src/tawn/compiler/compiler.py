@@ -33,13 +33,22 @@ from tawn.compiler.classifier import classify
 from tawn.compiler.conflicts import resolve_conflicts
 from tawn.compiler.delta import _IGNORE_DIRS, scan_granted, scan_history, scan_raw, update_file_state
 from tawn.ignore import load_ignore_patterns, should_ignore as _should_ignore
-from tawn.compiler.embedder import EmbedError, embed_text
+from tawn.compiler.embedder import EmbedError, embed_texts
 from tawn.compiler.entities import extract_and_resolve
 from tawn.compiler.parser import ParsedChunk, parse_file
 from tawn.compiler.wiki import atomic_swap, generate_domain_index
-from tawn.memory.schema import Chunk, CompileLog, Entity, FileState
+from tawn.memory.schema import Chunk, ChunkGroup, CompileLog, Entity, EntityEdge, FileState
 
 _SENTINEL = ".compile-requested"
+
+# How many chunks go to the embedder per provider call. Batching amortises the
+# per-request round trip (~2x at 8 on nomic-embed-text); a modest group bounds
+# how much work a single failed call has to redo.
+EMBED_GROUP = 32
+
+# How many chunks are written between commits. Progress must be durable during
+# a long run, not only at the end — see the 2026-07-23 batched-commit decision.
+WRITE_BATCH = 200
 
 
 def _storable_embedding(vec: list[float] | None) -> list[float] | None:
@@ -130,6 +139,10 @@ def run_compile(
         purge_paths = {
             p for p in all_source_paths
             if _should_ignore(Path(p), _dir_segs, _glob_pats, _abs_paths)
+            # Structural ignores too, so installs that indexed review-queue
+            # before it was excluded get cleaned on the next ordinary compile
+            # rather than needing a full rebuild.
+            or _IGNORE_DIRS.intersection(Path(p).parts)
         }
         if purge_paths:
             session.query(Chunk).filter(Chunk.source_path.in_(purge_paths)).delete(synchronize_session=False)
@@ -140,10 +153,23 @@ def run_compile(
         if rebuild:
             session.query(Chunk).delete()
             session.query(FileState).delete()
+            # Entities and edges go too: a rebuild re-derives them under the
+            # current extraction rules, and keeping rows produced by older
+            # rules leaves a half-migrated graph that no pass will ever clean.
+            session.query(EntityEdge).delete()
+            session.query(Entity).delete()
+            session.query(ChunkGroup).delete()
             session.flush()
             _text_exts = {".md", ".txt", ".rst"}
+            # _IGNORE_DIRS applies here too — rebuild globs raw/ directly and
+            # would otherwise re-ingest exactly what the incremental scan skips.
             delta_files_new = (
-                [f for f in raw_dir.rglob("*") if f.is_file() and f.suffix.lower() in _text_exts]
+                [
+                    f for f in raw_dir.rglob("*")
+                    if f.is_file()
+                    and f.suffix.lower() in _text_exts
+                    and not _IGNORE_DIRS.intersection(f.parts)
+                ]
                 if raw_dir.exists() else []
             )
             # also include granted paths and history in rebuild
@@ -203,7 +229,7 @@ def run_compile(
                             inferred_domain = classify(path, content_preview)
                         except Exception:
                             pass
-                chunks = parse_file(path, domain=inferred_domain)
+                chunks = parse_file(path, domain=inferred_domain, home=home)
                 # for history chunks: run classifier on content for domain
                 if path_str.startswith(hist_str):
                     for chunk in chunks:
@@ -261,28 +287,86 @@ def run_compile(
         # network blip, so those get retried with backoff instead of
         # poisoning the whole remaining batch on one bad connection.
         from tawn.compiler.embedder import get_embed_config as _get_embed_config
-        _, _locked_dims = _get_embed_config(home)
+        _locked_model, _locked_dims = _get_embed_config(home)
         _provider_confirmed = _locked_dims > 0
         _EMBED_RETRIES = 3 if _provider_confirmed else 1
         _EMBED_BACKOFF_S = 2.0
         now = datetime.datetime.utcnow()
-        _BATCH = 200
-        for i, parsed in enumerate(resolved_chunks):
-            embedding: list[float] | None = None
-            if embed_available:
-                for attempt in range(_EMBED_RETRIES):
-                    try:
-                        embedding = embed_text(parsed.content, home)
-                        if not _provider_confirmed:
-                            _provider_confirmed = True
-                            _EMBED_RETRIES = 3
-                        break
-                    except EmbedError:
-                        if attempt < _EMBED_RETRIES - 1:
-                            time.sleep(_EMBED_BACKOFF_S * (2 ** attempt))
-                else:
+
+        # Decide what actually needs embedding *before* calling the embedder.
+        # This loop used to embed every chunk unconditionally and only then
+        # check whether the content had changed — so an incremental compile
+        # with no edits still paid for the whole corpus and discarded the
+        # result. At ~1.3s per chunk that was hours of pure waste per run.
+        _needs_embed: list[ParsedChunk] = []
+        for parsed in resolved_chunks:
+            prior = existing_chunks.get((parsed.source_path, parsed.chunk_index))
+            if (
+                prior is not None
+                and prior.content_hash == parsed.content_hash
+                and prior.embedding is not None
+                # A vector from a different embedder is not comparable, so it
+                # must be redone even though the text is unchanged. Matching
+                # on width alone is not enough — nomic-embed-text and
+                # gemini-embedding-001 are both 768-dimensional but occupy
+                # unrelated vector spaces, so a width check would silently
+                # keep stale vectors and leave recall comparing nonsense.
+                and (not _locked_dims or prior.embed_dims == _locked_dims)
+                and (not _locked_model or prior.embed_model == _locked_model)
+            ):
+                continue
+            _needs_embed.append(parsed)
+
+        _embeddings: dict[tuple[str, int], tuple[list[float], str, int]] = {}
+
+        def _embed_window(window: list[ParsedChunk]) -> bool:
+            """Embed one window into `_embeddings`. False if the provider died."""
+            nonlocal _provider_confirmed, _EMBED_RETRIES, embed_available
+            for attempt in range(_EMBED_RETRIES):
+                try:
+                    vecs, model_name, dims = embed_texts(
+                        [p.content for p in window], home
+                    )
+                    for p, vec in zip(window, vecs):
+                        _embeddings[(p.source_path, p.chunk_index)] = (
+                            vec, model_name, dims,
+                        )
                     if not _provider_confirmed:
-                        embed_available = False
+                        _provider_confirmed = True
+                        _EMBED_RETRIES = 3
+                    return True
+                except EmbedError:
+                    if attempt < _EMBED_RETRIES - 1:
+                        time.sleep(_EMBED_BACKOFF_S * (2 ** attempt))
+            if not _provider_confirmed:
+                embed_available = False
+                return False
+            return True
+
+        # Embedding is interleaved with writing, one _BATCH slice at a time,
+        # so `session.commit()` below keeps firing *during* the embed phase.
+        # Hoisting all embedding into a single pre-pass was faster to read but
+        # reintroduced the failure the 2026-07-23 batched-commit decision
+        # fixed: nothing durable, and no progress signal, until every vector
+        # was computed — on a 12k-chunk rebuild that is an hour of work a
+        # single Ctrl-C throws away, with 12k vectors held in memory meanwhile.
+        # `_needs_embed` is already in `resolved_chunks` order, so a single
+        # cursor walks it — no rescanning the batch per chunk.
+        _embed_cursor = 0
+
+        for i, parsed in enumerate(resolved_chunks):
+            key = (parsed.source_path, parsed.chunk_index)
+            if embed_available and key not in _embeddings:
+                while _embed_cursor < len(_needs_embed) and key not in _embeddings:
+                    window = _needs_embed[_embed_cursor:_embed_cursor + EMBED_GROUP]
+                    _embed_cursor += len(window)
+                    if not _embed_window(window):
+                        break  # provider gone — rest stores unembedded
+
+            _meta = _embeddings.get((parsed.source_path, parsed.chunk_index))
+            embedding: list[float] | None = _meta[0] if _meta else None
+            embed_model: str | None = _meta[1] if _meta else None
+            embed_dims: int | None = _meta[2] if _meta else None
 
             safe_content = parsed.content.replace("\x00", "")
             existing = existing_chunks.get((parsed.source_path, parsed.chunk_index))
@@ -295,8 +379,18 @@ def run_compile(
                     existing.ttl_days = parsed.ttl_days
                     existing.stale = False
                     existing.compiled_at = now
+                    existing.group_key = parsed.group_key
+                    existing.group_label = parsed.group_label
+                    # Content changed, so the old title/summary describe text
+                    # that no longer exists — clear them for re-enrichment.
+                    existing.title = None
+                    existing.summary = None
+                    existing.enriched_at = None
+                    existing.enrich_attempts = 0
                     if embedding is not None:
                         existing.embedding = _storable_embedding(embedding)
+                        existing.embed_model = embed_model
+                        existing.embed_dims = embed_dims
             else:
                 session.add(Chunk(
                     domain=parsed.frontmatter.get("domain") or parsed.frontmatter.get("inferred_domain"),
@@ -310,6 +404,10 @@ def run_compile(
                     ttl_days=parsed.ttl_days,
                     stale=False,
                     compiled_at=now,
+                    group_key=parsed.group_key,
+                    group_label=parsed.group_label,
+                    embed_model=embed_model,
+                    embed_dims=embed_dims,
                 ))
                 chunks_added += 1
 
@@ -320,8 +418,36 @@ def run_compile(
             # hostage (invisible to any other session, and lost entirely if
             # the process is killed). Committing periodically makes embedded
             # chunks durable and searchable as they land, not all-or-nothing.
-            if (i + 1) % _BATCH == 0:
+            if (i + 1) % WRITE_BATCH == 0:
                 session.commit()
+
+        # Refresh ChunkGroup rows for every group touched this run. Counts are
+        # denormalised so the feed can render a card header without a GROUP BY
+        # over the whole chunks table on every page load.
+        from sqlalchemy import func as _func
+
+        touched = {p.group_key for p in resolved_chunks if p.group_key}
+        for gkey in touched:
+            rows = (
+                session.query(Chunk.domain, _func.count(Chunk.id))
+                .filter(Chunk.group_key == gkey)
+                .group_by(Chunk.domain)
+                .all()
+            )
+            total = sum(n for _, n in rows)
+            dominant = max(rows, key=lambda r: r[1])[0] if rows else None
+            label = next(
+                (p.group_label for p in resolved_chunks if p.group_key == gkey), None
+            )
+            grp = session.get(ChunkGroup, gkey)
+            if grp is None:
+                session.add(ChunkGroup(
+                    group_key=gkey, domain=dominant, chunk_count=total, title=label,
+                ))
+            else:
+                grp.chunk_count = total
+                grp.domain = dominant
+        session.flush()
 
         # Remove chunks for deleted files
         chunks_removed = 0
@@ -347,13 +473,17 @@ def run_compile(
 
         # Phase 8 — Wiki generation per changed domain
         staging_dir.mkdir(parents=True, exist_ok=True)
-        changed_domains: set[str] = set()
-        for parsed in resolved_chunks:
-            dom = parsed.frontmatter.get("domain")
-            if dom:
-                changed_domains.add(dom)
+        # Every domain that has chunks, not only those touched this run.
+        # Scoping to `resolved_chunks` meant a compile with nothing changed
+        # staged no domain pages at all — and the prune below then deleted
+        # every live one, so all four domain indexes vanished after an
+        # uneventful compile.
+        live_domains = {
+            d for (d,) in session.query(Chunk.domain).filter(Chunk.domain.isnot(None)).distinct().all()
+            if d
+        }
 
-        for domain in changed_domains:
+        for domain in sorted(live_domains):
             entities = [
                 e.canonical
                 for e in session.query(Entity).filter_by(domain=domain).limit(20).all()
@@ -367,6 +497,35 @@ def run_compile(
                 .all()
             ]
             generate_domain_index(domain, entities, recent, wiki_dir, staging_dir, router)
+
+        # Entity pages + link index. Related/backlink maps are built in one
+        # pass over the edge table rather than querying per entity — at 8k
+        # entities the per-entity version is thousands of round trips.
+        from tawn.compiler.wiki import generate_entity_page, generate_links_index
+
+        # No cap: a hardcoded limit(2000) silently wrote pages for 1,999 of
+        # 17,612 entities, so most wikilinks pointed at files that were never
+        # generated. Page writing is a cheap local file each; the graph views
+        # do their own limiting.
+        all_entities = session.query(Entity).all()
+        by_id = {e.id: e for e in all_entities}
+        related_map: dict[int, list[tuple[str, str]]] = {}
+        backlink_map: dict[int, list[str]] = {}
+        for ed in session.query(EntityEdge).all():
+            src, dst = by_id.get(ed.from_entity_id), by_id.get(ed.to_entity_id)
+            if src is None or dst is None:
+                continue
+            related_map.setdefault(src.id, []).append((dst.canonical, ed.relation))
+            backlink_map.setdefault(dst.id, []).append(src.canonical)
+
+        for ent in all_entities:
+            generate_entity_page(
+                ent,
+                related=related_map.get(ent.id, [])[:50],
+                backlinks=backlink_map.get(ent.id, [])[:50],
+                staging_dir=staging_dir,
+            )
+        generate_links_index(session, staging_dir)
 
         atomic_swap(staging_dir, wiki_dir)
 
