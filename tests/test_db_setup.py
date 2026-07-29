@@ -50,3 +50,24 @@ def test_doctor_reports_rows(tawn_home, tmp_path, monkeypatch):
     assert result.exit_code == 0
     for check in ("python", "home", "grants", "database"):
         assert check in result.output.lower()
+
+
+def test_db_status_carries_vector_readiness():
+    """Setup must say whether semantic search is actually available.
+
+    `tawn db setup` created the database but never enabled pgvector, so
+    recall silently fell back to keyword matching with nothing reported.
+    """
+    from tawn.dbsetup import DbStatus
+
+    st = DbStatus(server_up=True, db_exists=True, can_connect=True)
+    assert st.vector_ready is False  # default: prove nothing, claim nothing
+
+
+def test_ensure_vector_extension_reports_failure_without_raising(tmp_path):
+    """A missing server-side package must be reported, not raised."""
+    from tawn.dbsetup import ensure_vector_extension
+
+    ok, detail = ensure_vector_extension(f"sqlite+pysqlite:///{tmp_path}/x.db")
+    assert ok is False
+    assert detail

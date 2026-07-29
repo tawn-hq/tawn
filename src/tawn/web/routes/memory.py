@@ -274,3 +274,182 @@ def get_chunk(chunk_id: int, session: Session = Depends(get_session)):
         "asof": row.asof.isoformat() if row.asof else None,
         "chunk_index": row.chunk_index,
     }
+
+
+@router.get("/groups")
+def get_groups(
+    domain: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    session: Session = Depends(get_session),
+):
+    """Feed cards — one per source document or conversation.
+
+    Chunks are not the display unit: 26k rows is not a feed anyone reads.
+    Each card carries its group's roll-up header plus a preview of its
+    members, and falls back to cleaned chunk text while enrichment is still
+    working through the backlog.
+    """
+    from tawn.memory.preview import preview_text
+    from tawn.memory.schema import Chunk, ChunkGroup
+
+    q = session.query(ChunkGroup)
+    if domain:
+        q = q.filter(ChunkGroup.domain == domain)
+    total = q.count()
+    groups = q.order_by(ChunkGroup.group_key).offset(offset).limit(limit).all()
+
+    out = []
+    for g in groups:
+        members = (
+            session.query(Chunk)
+            .filter(Chunk.group_key == g.group_key)
+            .order_by(Chunk.chunk_index)
+            .limit(5)
+            .all()
+        )
+        latest = max((c.compiled_at for c in members if c.compiled_at), default=None)
+        # Lead with a document-level line. The group roll-up is the real
+        # answer, but until enrichment reaches its members, the first
+        # member's prose beats showing nothing.
+        card_summary = g.summary
+        if not card_summary and members:
+            card_summary = preview_text(members[0].summary or members[0].content, limit=240)
+
+        out.append({
+            "group_key": g.group_key,
+            "title": g.title,
+            "summary": card_summary,
+            "domain": g.domain,
+            "chunk_count": g.chunk_count,
+            "enriched": g.enriched_at is not None,
+            "latest_at": latest.isoformat() if latest else None,
+            "chunks": [
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    # A raw slice reads as pipe soup for tables and cuts
+                    # words in half; preview_text yields prose cut on a
+                    # sentence or word boundary.
+                    "summary": c.summary or preview_text(c.content),
+                    "stale": c.stale,
+                }
+                for c in members
+            ],
+        })
+    return {"total": total, "offset": offset, "limit": limit, "groups": out}
+
+
+@router.get("/groups/document")
+def get_group_document(
+    group_key: str,
+    session: Session = Depends(get_session),
+):
+    """One group's chunks reassembled into a readable document.
+
+    Chunks are the retrieval unit; this is the reading unit. `recall` keeps
+    matching individual chunks, which is right for search — but a reader
+    should not have to reassemble five length-based fragments mentally.
+
+    `group_key` is a query parameter rather than a path segment because it is
+    a filesystem path (and may carry a `#seam` suffix), so embedding it in the
+    URL path would need double-encoding to survive routing.
+    """
+    from fastapi import HTTPException
+
+    from tawn.memory.document import reconstruct
+
+    doc = reconstruct(session, group_key)
+    if doc is None:
+        raise HTTPException(404, f"no chunks for group: {group_key}")
+    return doc
+
+
+# ── Personal notes: review and edit ───────────────────────────────────────────
+
+class NoteEdit(BaseModel):
+    body: str | None = None
+    domain: str | None = None
+
+
+@router.get("/notes")
+def get_notes(domain: str | None = None, limit: int = 100, offset: int = 0):
+    """Personal notes, newest first — the review surface for what you wrote."""
+    from tawn.memory.notes import list_notes
+
+    notes = list_notes(tawn_home(), domain=domain)
+    return {
+        "total": len(notes),
+        "offset": offset,
+        "limit": limit,
+        "notes": notes[offset: offset + limit],
+    }
+
+
+@router.put("/notes/{note_id}")
+def put_note(note_id: str, body: NoteEdit):
+    """Edit a note in place and queue a recompile."""
+    from fastapi import HTTPException
+
+    from tawn.memory.notes import update_note
+
+    updated = update_note(tawn_home(), note_id, body=body.body, domain=body.domain)
+    if updated is None:
+        raise HTTPException(404, f"no note with id {note_id}")
+    return updated
+
+
+@router.delete("/notes/{note_id}")
+def remove_note(note_id: str):
+    from fastapi import HTTPException
+
+    from tawn.memory.notes import delete_note
+
+    if not delete_note(tawn_home(), note_id):
+        raise HTTPException(404, f"no note with id {note_id}")
+    return {"ok": True, "deleted": note_id}
+
+
+# ── Enrichment from the web ───────────────────────────────────────────────────
+
+class EnrichRequest(BaseModel):
+    limit: int = 200
+    cloud: bool = False
+
+
+@router.get("/enrich/status")
+def get_enrich_status(session: Session = Depends(get_session)):
+    """How much of the corpus has generated titles and summaries."""
+    from tawn.memory.schema import Chunk, ChunkGroup
+
+    total = session.query(Chunk).count()
+    enriched = session.query(Chunk).filter(Chunk.enriched_at.isnot(None)).count()
+    groups = session.query(ChunkGroup).count()
+    groups_done = session.query(ChunkGroup).filter(ChunkGroup.enriched_at.isnot(None)).count()
+    return {
+        "chunks_total": total,
+        "chunks_enriched": enriched,
+        "groups_total": groups,
+        "groups_enriched": groups_done,
+        "pending": max(0, total - enriched),
+    }
+
+
+@router.post("/enrich")
+def post_enrich(body: EnrichRequest, session: Session = Depends(get_session)):
+    """Run a bounded enrichment pass.
+
+    Bounded on purpose: a full pass over a large corpus takes hours, and an
+    HTTP request is the wrong place to hold that. The caller repeats it, or
+    the background thread drains the rest.
+    """
+    from tawn.compiler.enrich import run_enrich
+
+    result = run_enrich(tawn_home(), session, limit=body.limit, allow_cloud=body.cloud)
+    return {
+        "ok": result.ok,
+        "chunks_enriched": result.chunks_enriched,
+        "groups_enriched": result.groups_enriched,
+        "failed": result.failed,
+        "error": result.error,
+    }

@@ -18,7 +18,7 @@ def test_enable_disable_persist_and_audit(tawn_home):
     registry.disable("wealth", tawn_home)
     assert registry.enabled_names(tawn_home) == {"work"}
 
-    audit = (tawn_home / "audit.log").read_text()
+    audit = (tawn_home / "audit.jsonl").read_text()
     assert "domain.enable" in audit and "domain.disable" in audit
 
 

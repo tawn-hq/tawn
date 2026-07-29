@@ -83,3 +83,37 @@ def test_new_entity_inserted(db, tmp_path):
     extract_and_resolve(chunks, db, tmp_path)
     db.commit()
     assert db.query(Entity).filter(Entity.canonical == "BrandNewThing").count() == 1
+
+
+# ── Stage 7: free-text extraction removed ─────────────────────────────────────
+
+def test_no_longer_harvests_title_cased_words(db, tmp_path):
+    """The regex that produced `OK Traceback` and `None File` is gone.
+
+    Free-text extraction moved to compiler/enrich.py, which asks a model
+    instead of harvesting capitalised word pairs from raw text.
+    """
+    from tawn.compiler.entities import _extract_candidates
+
+    noisy = _chunk("OK Traceback None File TypeError Object Also I'm Absolutely The TAWN")
+    assert _extract_candidates(noisy) == []
+
+
+def test_regex_noise_no_longer_reaches_the_entity_table(db, tmp_path):
+    chunks = [_chunk("HTTP Request POST returned OK Traceback in Baseline Gemini")]
+    extract_and_resolve(chunks, db, tmp_path)
+    db.commit()
+    assert db.query(Entity).count() == 0
+
+
+def test_frontmatter_scalar_still_extracted():
+    from tawn.compiler.entities import _extract_candidates
+
+    assert _extract_candidates(_chunk("body", {"entity": "Tawn"})) == ["Tawn"]
+
+
+def test_frontmatter_list_deduplicates_preserving_order():
+    from tawn.compiler.entities import _extract_candidates
+
+    chunk = _chunk("body", {"entity": ["Tawn", "Tawn", "pgvector"]})
+    assert _extract_candidates(chunk) == ["Tawn", "pgvector"]

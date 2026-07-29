@@ -15,6 +15,7 @@ KIMI_BASE = "https://api.moonshot.cn/v1"
 QWEN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 GROQ_BASE = "https://api.groq.com/openai/v1"
 GROK_BASE = "https://api.x.ai/v1"
+MISTRAL_BASE = "https://api.mistral.ai/v1"
 
 
 class OpenAICompatProvider:
@@ -33,12 +34,69 @@ class OpenAICompatProvider:
         self.model = model
         self._client = client or openai_sdk.OpenAI(api_key=api_key, base_url=base_url)
 
-    def complete(self, msgs: list[Message], model: str | None = None) -> ModelResponse:
+    def complete(
+        self,
+        msgs: list[Message],
+        model: str | None = None,
+        tools: list | None = None,
+    ) -> ModelResponse:
         model = model or self.model
+        use_tools = bool(tools) and model not in self._NO_NATIVE_TOOLS
+        kwargs: dict = {"model": model}
+        if use_tools:
+            from tawn.model.toolwire import openai_messages, openai_tools
+
+            kwargs["messages"] = openai_messages(msgs)
+            kwargs["tools"] = openai_tools(tools)
+        elif tools:
+            # This endpoint has already refused tools once, so go straight to
+            # the prompted protocol rather than paying for the rejection again.
+            return self._complete_prompted(msgs, model, tools)
+        else:
+            kwargs["messages"] = [_encode(m) for m in msgs]
+        try:
+            resp = self._client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            if use_tools and _is_unsupported_tools_error(exc):
+                # Not every OpenAI-compatible endpoint implements tools. Falling
+                # back keeps the tool surface working on local gateways instead
+                # of restricting it to the expensive providers.
+                self._NO_NATIVE_TOOLS.add(model)
+                return self._complete_prompted(msgs, model, tools)
+            raise ModelError(
+                self._redact(f"{self.name}: {exc}"),
+                kind=self.classify_error(exc),
+                provider=self.name,
+            ) from exc
+        usage = getattr(resp, "usage", None)
+        tool_calls = []
+        if use_tools:
+            from tawn.model.toolwire import openai_calls
+
+            tool_calls = openai_calls(resp)
+        return ModelResponse(
+            text=resp.choices[0].message.content or "",
+            model=model,
+            provider=self.name,
+            tokens_in=getattr(usage, "prompt_tokens", 0) or 0,
+            tokens_out=getattr(usage, "completion_tokens", 0) or 0,
+            tool_calls=tool_calls,
+        )
+
+    #: Models whose endpoint rejected the tools API, so the next call uses the
+    #: prompted protocol directly.
+    _NO_NATIVE_TOOLS: set[str] = set()
+
+    def _complete_prompted(
+        self, msgs: list[Message], model: str, tools: list
+    ) -> ModelResponse:
+        from tawn.model.prompted import inject_tools, parse_prompted_calls
+
+        prepared = inject_tools(msgs, tools)
         try:
             resp = self._client.chat.completions.create(
                 model=model,
-                messages=[{"role": m.role, "content": m.content} for m in msgs],
+                messages=[{"role": m.role, "content": m.content} for m in prepared],
             )
         except Exception as exc:
             raise ModelError(
@@ -47,12 +105,14 @@ class OpenAICompatProvider:
                 provider=self.name,
             ) from exc
         usage = getattr(resp, "usage", None)
+        calls, cleaned = parse_prompted_calls(resp.choices[0].message.content or "")
         return ModelResponse(
-            text=resp.choices[0].message.content or "",
+            text=cleaned,
             model=model,
             provider=self.name,
             tokens_in=getattr(usage, "prompt_tokens", 0) or 0,
             tokens_out=getattr(usage, "completion_tokens", 0) or 0,
+            tool_calls=calls,
         )
 
     def stream_complete(self, msgs: list[Message], model: str | None = None) -> Iterator[StreamChunk]:
@@ -153,4 +213,45 @@ def grok_provider(api_key: str) -> OpenAICompatProvider:
     return OpenAICompatProvider(
         name="grok", api_key=api_key,
         model="grok-3", base_url=GROK_BASE,
+    )
+
+
+def _is_unsupported_tools_error(exc: Exception) -> bool:
+    """Whether an endpoint rejected the *tools API* rather than the request.
+
+    Matched on the message because OpenAI-compatible gateways return a plain
+    400 for this, indistinguishable by status code from any other bad request.
+    """
+    text = str(exc).lower()
+    return "tool" in text and any(
+        phrase in text
+        for phrase in (
+            "does not support", "not supported", "unsupported",
+            "unrecognized", "unknown parameter", "invalid",
+        )
+    )
+
+
+def _encode(m) -> dict:
+    """One message in OpenAI wire form, with images when present."""
+    if not getattr(m, "images", None):
+        return {"role": m.role, "content": m.content}
+    parts: list[dict] = [
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{img.get('media_type', 'image/png')};base64,{img.get('data', '')}"
+            },
+        }
+        for img in m.images
+    ]
+    if m.content:
+        parts.append({"type": "text", "text": m.content})
+    return {"role": m.role, "content": parts}
+
+
+def mistral_provider(api_key: str) -> OpenAICompatProvider:
+    return OpenAICompatProvider(
+        name="mistral", api_key=api_key,
+        model="mistral-large-latest", base_url=MISTRAL_BASE,
     )

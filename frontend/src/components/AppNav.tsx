@@ -4,6 +4,10 @@ const APP_LINKS = [
   { label: 'dashboard', to: '/dashboard' },
   { label: 'chat', to: '/chat' },
   { label: 'memory', to: '/memory' },
+  { label: 'notes', to: '/notes' },
+  { label: 'wiki', to: '/wiki' },
+  { label: 'activity', to: '/observability' },
+  { label: 'tools', to: '/tools' },
   { label: 'agents', to: '/agents' },
   { label: 'settings', to: '/settings' },
 ]

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getProfile, putProfile } from '../lib/api'
+import { useErrors } from '../components/Errors'
 
 interface Profile {
   name?: string
@@ -9,13 +10,15 @@ interface Profile {
 }
 
 export default function Profile() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const [profile, setProfile] = useState<Profile>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    getProfile().then(setProfile).catch(() => {})
+    getProfile().then(setProfile).catch(reportError)
   }, [])
 
   function set(k: string, v: string) {

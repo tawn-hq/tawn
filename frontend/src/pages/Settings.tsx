@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import AppNav from '../components/AppNav'
 import { Card, Input, Textarea, Button, Checkbox, Badge } from '../ds'
+import { useErrors } from '../components/Errors'
 
 function useIsMobile() {
   const [m, setM] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640)
@@ -13,7 +13,7 @@ function useIsMobile() {
   }, [])
   return m
 }
-import { getGrants, putGrants, confirmGrants, getProfile, putProfile, getDomains, getAllModels, enableDomain, disableDomain, getKeyStatus, postKey, getChunkStats, deleteChunks, postCompile, getAudit, verifyAudit, type Grants, type DomainRow, type ModelRow, type ChunkStats, type AuditPage } from '../lib/api'
+import { getGrants, putGrants, getProfile, putProfile, getDomains, getAllModels, enableDomain, disableDomain, getKeyStatus, postKey, getChunkStats, deleteChunks, postCompile, getAudit, verifyAudit, type Grants, type DomainRow, type ModelRow, type ChunkStats, type AuditPage } from '../lib/api'
 import { SetupWizard } from './Setup'
 import { LogsPanel } from './Logs'
 
@@ -142,7 +142,6 @@ function GrantsTab() {
   const [grants, setGrants] = useState<Grants | null>(null)
   const [status, setStatus] = useState('')
   const [loadError, setLoadError] = useState('')
-  const [confirming, setConfirming] = useState(false)
 
   function load() {
     setLoadError('')
@@ -153,25 +152,17 @@ function GrantsTab() {
 
   useEffect(load, [])
 
-  async function reviewAndConfirm() {
-    setConfirming(true)
-    try {
-      const r = await confirmGrants()
-      if (r.ok) load()
-      else setLoadError(r.error || 'confirm failed')
-    } catch (err: unknown) {
-      setLoadError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setConfirming(false)
-    }
-  }
+  const [pendingConfirm, setPendingConfirm] = useState<string | null>(null)
 
   async function save() {
     if (!grants) return
     setStatus('saving…')
     try {
-      await putGrants(grants)
-      setStatus('saved')
+      const r = await putGrants(grants)
+      // Saving no longer activates grants: the integrity sidecar must be
+      // acknowledged from the machine itself, or the check proves nothing.
+      setStatus(r.confirmed ? 'saved' : 'saved — not active yet')
+      if (!r.confirmed) setPendingConfirm(r.message)
     } catch (err: unknown) {
       setStatus(`error: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -181,12 +172,24 @@ function GrantsTab() {
     return (
       <Card>
         <p style={{ fontSize: 13, color: 'var(--tawn-crit)', marginBottom: 10 }}>{loadError}</p>
-        <p style={{ fontSize: 12, color: 'var(--tawn-text-3)', marginBottom: 14, lineHeight: 1.5 }}>
-          grants.yaml was changed outside the normal save flow. Review <code style={{ fontFamily: 'var(--tawn-font-mono)' }}>~/.tawn/grants.yaml</code> yourself, then confirm it below — or run <code style={{ fontFamily: 'var(--tawn-font-mono)' }}>tawn grant confirm</code> from a terminal.
+        <p style={{ fontSize: 12, color: 'var(--tawn-text-3)', marginBottom: 12, lineHeight: 1.6 }}>
+          grants.yaml changed outside the normal save flow. Review{' '}
+          <code style={{ fontFamily: 'var(--tawn-font-mono)' }}>~/.tawn/grants.yaml</code>, then
+          acknowledge it from a terminal on this machine:
+        </p>
+        {/* Confirming from the browser used to be a button here. Paired with
+            the save endpoint it let anyone who could reach the port both write
+            grants and bless them, so the tamper check proved nothing. The
+            acknowledgement has to come from somewhere the network cannot. */}
+        <code style={{ display: 'inline-block', marginBottom: 14, fontSize: 12.5, fontFamily: 'var(--tawn-font-mono)', background: 'var(--tawn-surface)', border: '1px solid var(--tawn-line)', borderRadius: 4, padding: '6px 10px' }}>
+          tawn grant confirm
+        </code>
+        <p style={{ fontSize: 11.5, color: 'var(--tawn-text-3)', marginBottom: 14, lineHeight: 1.6 }}>
+          It cannot be confirmed from here on purpose — a check you can satisfy
+          over the network is not a check.
         </p>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Button onClick={reviewAndConfirm} disabled={confirming}>{confirming ? 'confirming…' : "I've reviewed it — confirm"}</Button>
-          <Button variant="secondary" onClick={load}>retry</Button>
+          <Button onClick={load}>retry</Button>
         </div>
       </Card>
     )
@@ -198,21 +201,61 @@ function GrantsTab() {
     <Card>
       <PathList label="read paths" paths={grants.read} setPaths={(p) => setGrants({ ...grants, read: p })} />
       <PathList label="write paths" paths={grants.write} setPaths={(p) => setGrants({ ...grants, write: p })} />
-      <Checkbox label="system awareness" hint="full-system context, per-session opt-in" checked={grants.system} onChange={(e) => setGrants({ ...grants, system: e.target.checked })} />
-      <div style={{ marginTop: 20, display: 'flex', gap: 8, alignItems: 'center' }}>
+
+      <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <Checkbox
+          label="network access"
+          hint="lets tools fetch pages and search the web"
+          checked={grants.net}
+          onChange={(e) => setGrants({ ...grants, net: e.target.checked })}
+        />
+        <Checkbox
+          label="shell access"
+          hint="lets tools run commands — the widest grant here"
+          checked={grants.shell}
+          onChange={(e) => setGrants({ ...grants, shell: e.target.checked })}
+        />
+      </div>
+
+      {/* `system` is intentionally not editable here. It is the
+          full-machine-awareness flag and this surface has no authentication,
+          so it is managed only from the machine itself. */}
+      <p style={{ fontSize: 12, color: 'var(--tawn-text-3)', marginTop: 14, lineHeight: 1.6 }}>
+        System awareness is {grants.system ? 'on' : 'off'}, and is changed only by editing{' '}
+        <code style={{ fontFamily: 'var(--tawn-font-mono)' }}>~/.tawn/grants.yaml</code> directly —
+        it is the widest permission Tawn has, so it is not reachable from a browser.
+      </p>
+
+      <div style={{ marginTop: 20, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <Button onClick={save}>save grants</Button>
         {status && <span style={{ fontSize: 12, color: 'var(--tawn-text-2)', fontFamily: 'var(--tawn-font-mono)' }}>{status}</span>}
       </div>
+
+      {pendingConfirm && (
+        <div style={{ marginTop: 14, padding: '11px 13px', border: '1px solid var(--tawn-warn)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-raised)' }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--tawn-warn)', marginBottom: 4 }}>
+            not active yet
+          </div>
+          <p style={{ fontSize: 12.5, color: 'var(--tawn-text-2)', lineHeight: 1.6, margin: 0 }}>
+            {pendingConfirm}
+          </p>
+          <code style={{ display: 'inline-block', marginTop: 8, fontSize: 12, fontFamily: 'var(--tawn-font-mono)', background: 'var(--tawn-surface)', border: '1px solid var(--tawn-line)', borderRadius: 4, padding: '4px 8px' }}>
+            tawn grant confirm
+          </code>
+        </div>
+      )}
     </Card>
   )
 }
 
 function PersonalityTab() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const [profile, setProfile] = useState<Record<string, string>>({})
   const [tone, setTone] = useState('Direct, technical, unembellished. Skip the pep talk.')
   const [status, setStatus] = useState('')
 
-  useEffect(() => { getProfile().then(setProfile).catch(() => {}) }, [])
+  useEffect(() => { getProfile().then(setProfile).catch(reportError) }, [])
 
   async function save() {
     setStatus('saving…')
@@ -270,11 +313,13 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 }
 
 function DomainsTab() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const navigate = useNavigate()
   const [domains, setDomains] = useState<DomainRow[]>([])
   const [toggling, setToggling] = useState<string | null>(null)
 
-  useEffect(() => { getDomains().then(setDomains).catch(() => {}) }, [])
+  useEffect(() => { getDomains().then(setDomains).catch(reportError) }, [])
 
   async function toggle(d: DomainRow) {
     setToggling(d.name)
@@ -317,6 +362,8 @@ const OLLAMA_POPULAR = ['llama3.2', 'llama3.1', 'mistral', 'gemma3', 'qwen2.5', 
 interface EmbedCandidate { id: string; dims: number; provider: string; label: string }
 
 function ModelsTab() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const [models, setModels] = useState<ModelRow[]>([])
   const [keyStates, setKeyStates] = useState<Record<string, string>>({})
   const [provider, setProvider] = useState(PROVIDERS[0])
@@ -335,12 +382,12 @@ function ModelsTab() {
     fetch('/api/models/embed').then((r) => r.json()).then((d: { current: string; candidates: EmbedCandidate[] }) => {
       setEmbedCurrent(d.current || '')
       setEmbedCandidates(d.candidates)
-    }).catch(() => {})
+    }).catch(reportError)
   }
 
   useEffect(() => {
-    getAllModels().then(setModels).catch(() => {})
-    PROVIDERS.forEach((p) => getKeyStatus(p).then((r) => setKeyStates((s) => ({ ...s, [p]: r.status }))).catch(() => {}))
+    getAllModels().then(setModels).catch(reportError)
+    PROVIDERS.forEach((p) => getKeyStatus(p).then((r) => setKeyStates((s) => ({ ...s, [p]: r.status }))).catch(reportError))
     loadEmbed()
   }, [])
 
@@ -376,7 +423,7 @@ function ModelsTab() {
       setKeyStates((s) => ({ ...s, [provider]: 'set' }))
       setKeyMsg(`${provider} key stored`)
       setApiKey('')
-      getAllModels().then(setModels).catch(() => {})
+      getAllModels().then(setModels).catch(reportError)
     } catch (err: unknown) {
       setKeyMsg(`error: ${err instanceof Error ? err.message : String(err)}`)
     } finally { setBusy(false) }
@@ -397,7 +444,7 @@ function ModelsTab() {
       if (data.ok) {
         setOllamaMsg(`${name} installed — refresh to see it in the list`)
         setOllamaModel('')
-        getAllModels().then(setModels).catch(() => {})
+        getAllModels().then(setModels).catch(reportError)
       } else {
         setOllamaMsg(`error: ${data.error || 'pull failed'}`)
       }
@@ -579,10 +626,9 @@ function IntegrationsTab() {
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>connect tawn to your agents →</div>
         <p style={{ fontSize: 13, color: 'var(--tawn-text-2)', lineHeight: 1.5 }}>Per-agent MCP config snippets — Claude Code, Cursor, Gemini CLI, and a plain AGENTS.md block.</p>
       </Card>
-      <Card>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>MCP skill factory</div>
-        <p style={{ fontSize: 13, color: 'var(--tawn-text-2)', lineHeight: 1.5, marginBottom: 10 }}>Author skills that project to every agent's AGENTS.md. Coming in Stage 9.</p>
-        <Badge tone="neutral">stage 9</Badge>
+      <Card style={{ cursor: 'pointer' }} onClick={() => navigate('/tools')}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>tools, servers &amp; skills →</div>
+        <p style={{ fontSize: 13, color: 'var(--tawn-text-2)', lineHeight: 1.5 }}>MCP servers your twin can call, skills that project to every agent on this machine, and tools it wrote itself.</p>
       </Card>
       <Card style={{ cursor: 'pointer' }} onClick={() => navigate('/setup')}>
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>model providers & setup →</div>
@@ -818,6 +864,8 @@ function DatabaseTab() {
 const AUDIT_PAGE = 50
 
 function AuditPanel() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const [data, setData] = useState<AuditPage>({ total: 0, entries: [] })
   const [offset, setOffset] = useState(0)
   const [intact, setIntact] = useState<boolean | null>(null)
@@ -828,7 +876,7 @@ function AuditPanel() {
     setLoading(true)
     getAudit(AUDIT_PAGE, off)
       .then((d) => { setData(d); setOffset(off) })
-      .catch(() => {})
+      .catch(reportError)
       .finally(() => setLoading(false))
   }
 
@@ -945,8 +993,7 @@ export default function Settings() {
   const [tab, setTab] = useState<Tab>('grants')
   const mobile = useIsMobile()
   return (
-    <div style={{ background: 'var(--tawn-bg)', minHeight: '100vh' }}>
-      <AppNav />
+    <>
       <div style={{ maxWidth: 900, margin: '0 auto', padding: mobile ? '20px 16px 48px' : '32px 24px 64px' }}>
         <h1 style={{ fontSize: mobile ? 19 : 22, fontWeight: 700, marginBottom: 4 }}>settings</h1>
         <p style={{ fontSize: 13, color: 'var(--tawn-text-2)', marginBottom: mobile ? 18 : 28 }}>deny-all by default. every access is logged to the audit trail.</p>
@@ -967,6 +1014,6 @@ export default function Settings() {
           </div>
         </div>
       </div>
-    </div>
+    </>
   )
 }

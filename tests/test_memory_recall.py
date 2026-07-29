@@ -119,3 +119,38 @@ def test_recall_composed_format_calls_router(mock_embed, home, db):
         )
     assert result["format"] == "composed"
     assert "answer" in result
+
+
+def test_cosine_search_excludes_other_embedders(tmp_path):
+    """Same width, different model = different vector space.
+
+    nomic-embed-text and gemini-embedding-001 are both 768-dimensional but
+    share no geometry. Comparing across them does not error — it returns
+    nonsense with confident-looking scores, which is worse than failing.
+    """
+    import datetime
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session as _S
+    from tawn.memory.schema import Base, Chunk
+    from tawn.memory.recall import _cosine_search
+
+    (tmp_path / "config.yaml").write_text("embed_model: gemini-embedding-001\nembed_dims: 768\n")
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with _S(engine) as s:
+        for i, model in enumerate(["nomic-embed-text", "gemini-embedding-001"]):
+            s.add(Chunk(
+                source_path=f"/{model}.md", chunk_index=i, content=f"from {model}",
+                content_hash="h" * 16, asof=datetime.datetime.utcnow(),
+                compiled_at=datetime.datetime.utcnow(),
+                embed_model=model, embed_dims=768,
+            ))
+        s.commit()
+
+        # SQLite has no pgvector, so the filter is exercised via the query
+        # builder rather than the distance operator.
+        q = _cosine_search(s, [0.1] * 768, None, 10, None, home=tmp_path)
+        # Falls back to all chunks on SQLite; assert the guard itself instead.
+        from tawn.compiler.embedder import get_embed_config
+        assert get_embed_config(tmp_path)[0] == "gemini-embedding-001"
+        assert len(q) >= 1

@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react'
 import { listHistory, getHistorySession, SessionMeta, HistoryEntry } from '../lib/api'
+import { useErrors } from '../components/Errors'
 
 export default function History() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const [active, setActive] = useState<string | null>(null)
   const [entries, setEntries] = useState<HistoryEntry[]>([])
 
   useEffect(() => {
-    listHistory().then(setSessions).catch(() => {})
+    listHistory().then(setSessions).catch(reportError)
   }, [])
 
   function openSession(id: string) {

@@ -2,7 +2,7 @@ import datetime
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
-from tawn.memory.schema import Chunk, Entity, EntityEdge, FileState, CompileLog, Base
+from tawn.memory.schema import Chunk, ChunkGroup, Entity, EntityEdge, FileState, CompileLog, Base
 
 
 @pytest.fixture()
@@ -70,3 +70,60 @@ def test_entity_edge(engine):
         s.add(edge)
         s.commit()
         assert edge.id is not None
+
+
+# ── Stage 7: enrichment columns ───────────────────────────────────────────────
+
+def test_chunk_has_enrichment_columns(engine):
+    with Session(engine) as s:
+        c = Chunk(
+            source_path="/x.md", chunk_index=0, content="hi",
+            content_hash="abc", asof=datetime.datetime.utcnow(),
+            title="A title", summary="A summary",
+            group_key="/x.md", group_label="x.md",
+        )
+        s.add(c)
+        s.commit()
+        got = s.query(Chunk).filter_by(source_path="/x.md").one()
+        assert got.title == "A title"
+        assert got.summary == "A summary"
+        assert got.enriched_at is None
+        assert got.enrich_attempts == 0
+        assert got.group_key == "/x.md"
+        assert got.group_label == "x.md"
+
+
+def test_chunk_group_roundtrips(engine):
+    with Session(engine) as s:
+        s.add(ChunkGroup(
+            group_key="/x.md", title="Session", summary="What happened",
+            domain="work", chunk_count=3,
+        ))
+        s.commit()
+        got = s.query(ChunkGroup).one()
+        assert got.chunk_count == 3
+        assert got.enriched_at is None
+        assert got.enrich_attempts == 0
+
+
+def test_entity_edge_has_weight(engine):
+    with Session(engine) as s:
+        a = Entity(canonical="A")
+        b = Entity(canonical="B")
+        s.add_all([a, b])
+        s.flush()
+        s.add(EntityEdge(from_entity_id=a.id, to_entity_id=b.id,
+                         relation="co-occurs", weight=4))
+        s.commit()
+        assert s.query(EntityEdge).one().weight == 4
+
+
+def test_entity_edge_weight_defaults_to_one(engine):
+    with Session(engine) as s:
+        a = Entity(canonical="A")
+        b = Entity(canonical="B")
+        s.add_all([a, b])
+        s.flush()
+        s.add(EntityEdge(from_entity_id=a.id, to_entity_id=b.id, relation="uses"))
+        s.commit()
+        assert s.query(EntityEdge).one().weight == 1

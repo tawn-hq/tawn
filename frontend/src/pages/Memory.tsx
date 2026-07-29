@@ -1,9 +1,10 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { marked } from 'marked'
-import AppNav from '../components/AppNav'
 import { Card, Input, Textarea, Button, Badge } from '../ds'
-import { postNote, postRecall, postCompile, getChunks, type RecallResult, type SnippetChunk, type FeedChunk } from '../lib/api'
+import { useErrors } from '../components/Errors'
+import EntityGraph from '../components/EntityGraph'
+import { postNote, postRecall, postCompile, getGroups, getGroupDocument, getWikiGraph, getEnrichStatus, postEnrich, type GraphData, type EnrichStatus, type RecallResult, type SnippetChunk, type GroupCard, type GroupDocument } from '../lib/api'
 
 marked.setOptions({ breaks: true })
 
@@ -20,8 +21,6 @@ function Md({ src, maxLen }: { src: string; maxLen?: number }) {
     />
   )
 }
-
-const DOMAIN_ANGLE: Record<string, number> = { work: -135, wealth: -45, research: 45, academic: 135 }
 
 const DOMAINS = ['work', 'wealth', 'research', 'academic', 'hobby'] as const
 type Domain = typeof DOMAINS[number]
@@ -44,40 +43,79 @@ function ViewToggle({ view, setView }: { view: 'feed' | 'graph'; setView: (v: 'f
   )
 }
 
-function SourceTypeBadge({ type }: { type: FeedChunk['source_type'] }) {
-  const map: Record<string, string> = {
-    'agent-memory': 'var(--tawn-lapis)',
-    history: 'var(--tawn-text-3)',
-    raw: 'var(--tawn-text-3)',
-    imports: 'var(--tawn-warn)',
-    external: 'var(--tawn-text-3)',
-  }
-  const color = map[type] || 'var(--tawn-text-3)'
-  return (
-    <span style={{ fontSize: 10, fontFamily: 'var(--tawn-font-mono)', border: `1px solid ${color}`, color, borderRadius: 999, padding: '1px 6px' }}>{type}</span>
-  )
-}
+function GroupCardView({ card, onOpen }: { card: GroupCard; onOpen: (id: number) => void }) {
+  const [open, setOpen] = useState(false)
+  const [doc, setDoc] = useState<GroupDocument | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState('')
+  const dom = DOMAINS.includes(card.domain as Domain) ? (card.domain as Domain) : undefined
+  const heading = card.title || card.group_key.split('/').pop() || card.group_key
 
-function FeedCard({ chunk, onClick }: { chunk: FeedChunk; onClick: () => void }) {
-  const [hover, setHover] = useState(false)
-  const dom = DOMAINS.includes(chunk.domain as Domain) ? chunk.domain as Domain : undefined
+  // Chunks are the retrieval unit; the document is the reading unit. Expanding
+  // reassembles the group into the whole file rather than listing fragments.
+  function toggle() {
+    const next = !open
+    setOpen(next)
+    if (next && !doc && !loading) {
+      setLoading(true)
+      setErr('')
+      getGroupDocument(card.group_key)
+        .then(setDoc)
+        .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+        .finally(() => setLoading(false))
+    }
+  }
+
+  const html = useMemo(() => (doc ? (marked.parse(doc.body) as string) : ''), [doc])
+
   return (
-    <div
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{ borderBottom: '1px solid var(--tawn-line)', cursor: 'pointer', background: hover ? 'var(--tawn-lapis-soft)' : 'transparent', margin: '0 -20px', padding: '14px 20px', transition: 'background 0.1s' }}
-    >
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 7, flexWrap: 'wrap' }}>
+    <div style={{ border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-surface)', marginBottom: 10, overflow: 'hidden' }}>
+      <div
+        onClick={toggle}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: 'var(--tawn-raised)', borderBottom: (open || card.summary) ? '1px solid var(--tawn-line)' : 'none', cursor: 'pointer', flexWrap: 'wrap' }}
+      >
+        <span style={{ fontFamily: 'var(--tawn-font-mono)', fontSize: 11, color: 'var(--tawn-text-3)', width: 10 }}>{open ? '\u2212' : '+'}</span>
         {dom && <Badge domain={dom}>{dom}</Badge>}
-        {chunk.stale && <Badge status="warn">stale</Badge>}
-        <SourceTypeBadge type={chunk.source_type} />
-        <span style={{ fontSize: 11, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chunk.source_label}</span>
-        <span style={{ fontSize: 11, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)', whiteSpace: 'nowrap' }}>
-          {chunk.compiled_at ? new Date(chunk.compiled_at).toLocaleDateString() : ''}
+        <strong style={{ fontSize: 13, color: 'var(--tawn-text)' }}>{heading}</strong>
+        <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: 'var(--tawn-font-mono)', color: 'var(--tawn-text-3)', whiteSpace: 'nowrap' }}>
+          {card.chunk_count} {card.chunk_count === 1 ? 'entry' : 'entries'}
+          {card.latest_at ? ` \u00b7 ${new Date(card.latest_at).toLocaleDateString()}` : ''}
         </span>
       </div>
-      <Md src={chunk.content} maxLen={300} />
+
+      {card.summary && !open && (
+        <div style={{ padding: '9px 12px', fontSize: 12.5, lineHeight: 1.6, color: 'var(--tawn-text-2)' }}>
+          {card.summary}
+        </div>
+      )}
+
+      {open && (
+        <div style={{ padding: '12px 14px' }}>
+          {loading && <div style={{ fontSize: 12, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>reassembling document…</div>}
+          {err && <div style={{ fontSize: 12, color: 'var(--tawn-warn)' }}>{err}</div>}
+          {doc && (
+            <>
+              <div style={{ fontSize: 11, fontFamily: 'var(--tawn-font-mono)', color: 'var(--tawn-text-3)', marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <span>{doc.chunk_count} chunks reassembled</span>
+                <span>{doc.enriched_chunks}/{doc.chunk_count} summarised</span>
+                {doc.source_paths[0] && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{doc.source_paths[0]}</span>}
+              </div>
+              <div
+                className="tawn-md"
+                dangerouslySetInnerHTML={{ __html: html }}
+                style={{ fontSize: 13.5, lineHeight: 1.7, color: 'var(--tawn-text)', maxHeight: 620, overflowY: 'auto' }}
+              />
+              <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {doc.chunk_ids.slice(0, 1).map((id) => (
+                  <Button key={id} variant="secondary" size="sm" onClick={() => onOpen(id)}>
+                    open first chunk
+                  </Button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -100,36 +138,13 @@ function RecallCard({ c, onClick }: { c: SnippetChunk; onClick?: () => void }) {
   )
 }
 
-function MemoryGraph({ size }: { size: number }) {
-  const c = size / 2, r1 = size * 0.3
-  const domainPos: Record<string, { x: number; y: number }> = {}
-  Object.entries(DOMAIN_ANGLE).forEach(([d, angle]) => {
-    const rad = (angle * Math.PI) / 180
-    domainPos[d] = { x: c + r1 * Math.cos(rad), y: c + r1 * Math.sin(rad) }
-  })
-  return (
-    <svg width="100%" height={size} viewBox={`0 0 ${size} ${size}`} style={{ display: 'block' }}>
-      {Object.entries(domainPos).map(([d, p]) => (
-        <line key={'r' + d} x1={c} y1={c} x2={p.x} y2={p.y} stroke="var(--tawn-line-strong)" strokeWidth="1.5" />
-      ))}
-      {Object.entries(domainPos).map(([d, p]) => (
-        <g key={d}>
-          <circle cx={p.x} cy={p.y} r={size * 0.035} fill="var(--tawn-surface)" stroke={`var(--tawn-${d})`} strokeWidth="2.5" />
-          <text x={p.x} y={p.y + size * 0.035 + 16} textAnchor="middle" fontFamily="var(--tawn-font-mono)" fontWeight="600" fontSize={size * 0.026} fill="var(--tawn-text)">{d}</text>
-        </g>
-      ))}
-      <circle cx={c} cy={c} r={size * 0.014} fill="var(--tawn-lapis-soft)" />
-      <circle cx={c} cy={c} r={size * 0.028} fill="var(--tawn-lapis)" />
-    </svg>
-  )
-}
-
 export default function Memory() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [view, setView] = useState<'feed' | 'graph'>('feed')
   const [domainFilter, setDomainFilter] = useState<string>('')
-  const [sourceTypeFilter, setSourceTypeFilter] = useState<string>('knowledge')
   const [result, setResult] = useState<RecallResult | null>(null)
   const [recallStatus, setRecallStatus] = useState('')
   const [noteText, setNoteText] = useState('')
@@ -137,22 +152,54 @@ export default function Memory() {
   const [noteStatus, setNoteStatus] = useState('')
   const [compileStatus, setCompileStatus] = useState('')
   const [attached, setAttached] = useState<File | null>(null)
-  const [feedChunks, setFeedChunks] = useState<FeedChunk[]>([])
+  const [groups, setGroups] = useState<GroupCard[]>([])
   const [feedTotal, setFeedTotal] = useState(0)
   const [feedOffset, setFeedOffset] = useState(0)
   const [feedLoading, setFeedLoading] = useState(false)
+  const [graph, setGraph] = useState<GraphData>({ nodes: [], links: [] })
+  const [enrich, setEnrich] = useState<EnrichStatus | null>(null)
+  const [enrichBusy, setEnrichBusy] = useState(false)
+  const [enrichMsg, setEnrichMsg] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const LIMIT = 20
 
-  function loadFeed(offset = 0, domain = domainFilter, srcType = sourceTypeFilter) {
+  function loadFeed(offset = 0, domain = domainFilter) {
     setFeedLoading(true)
-    getChunks({ domain: domain || undefined, source_type: srcType || undefined, limit: LIMIT, offset })
-      .then((page) => { setFeedChunks(page.chunks); setFeedTotal(page.total); setFeedOffset(offset) })
-      .catch(() => {})
+    getGroups({ domain: domain || undefined, limit: LIMIT, offset })
+      .then((page) => { setGroups(page.groups); setFeedTotal(page.total); setFeedOffset(offset) })
+      .catch(reportError)
       .finally(() => setFeedLoading(false))
   }
 
-  useEffect(() => { loadFeed(0, domainFilter, sourceTypeFilter) }, [domainFilter, sourceTypeFilter])
+  useEffect(() => { loadFeed(0, domainFilter) }, [domainFilter])
+
+  // Fetched lazily: the graph is only needed once the tab is opened.
+  useEffect(() => {
+    if (view === 'graph' && graph.nodes.length === 0) {
+      getWikiGraph({ domain: domainFilter || undefined, limit: 250 })
+        .then(setGraph)
+        .catch(reportError)
+    }
+  }, [view, domainFilter])
+
+  useEffect(() => { getEnrichStatus().then(setEnrich).catch(reportError) }, [])
+
+  async function handleEnrich() {
+    setEnrichBusy(true)
+    setEnrichMsg('enriching…')
+    try {
+      const res = await postEnrich(200, true)
+      setEnrichMsg(res.ok
+        ? `+${res.chunks_enriched} chunks, +${res.groups_enriched} groups`
+        : `stopped: ${res.error}`)
+      getEnrichStatus().then(setEnrich).catch(reportError)
+      loadFeed(feedOffset)
+    } catch (e: unknown) {
+      setEnrichMsg(`error: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setEnrichBusy(false)
+    }
+  }
 
   async function handleRecall(e: FormEvent) {
     e.preventDefault()
@@ -201,8 +248,7 @@ export default function Memory() {
   const hasResult = !!result
 
   return (
-    <div style={{ background: 'var(--tawn-bg)', minHeight: '100vh' }}>
-      <AppNav />
+    <>
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px 64px' }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>memory</h1>
         <p style={{ fontSize: 13, color: 'var(--tawn-text-2)', marginBottom: 20 }}>everything your twin has recalled, been told, and watched happen — one feed, every domain.</p>
@@ -217,25 +263,14 @@ export default function Memory() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <ViewToggle view={view} setView={setView} />
             {!hasResult && view === 'feed' && (
-              <>
-                <select
-                  value={sourceTypeFilter}
-                  onChange={(e) => setSourceTypeFilter(e.target.value)}
-                  style={{ fontSize: 12, fontFamily: 'var(--tawn-font-mono)', padding: '5px 8px', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-raised)', color: 'var(--tawn-text)' }}
-                >
-                  <option value="knowledge">knowledge</option>
-                  <option value="all">all</option>
-                  <option value="imports">imports</option>
-                </select>
-                <select
-                  value={domainFilter}
-                  onChange={(e) => setDomainFilter(e.target.value)}
-                  style={{ fontSize: 12, fontFamily: 'var(--tawn-font-mono)', padding: '5px 8px', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-raised)', color: 'var(--tawn-text)' }}
-                >
-                  <option value="">all domains</option>
-                  {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
-                </select>
-              </>
+              <select
+                value={domainFilter}
+                onChange={(e) => setDomainFilter(e.target.value)}
+                style={{ fontSize: 12, fontFamily: 'var(--tawn-font-mono)', padding: '5px 8px', border: '1px solid var(--tawn-line)', borderRadius: 'var(--tawn-radius-sm)', background: 'var(--tawn-raised)', color: 'var(--tawn-text)' }}
+              >
+                <option value="">all domains</option>
+                {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
             )}
           </div>
           {recallStatus && <span style={{ fontSize: 11, color: 'var(--tawn-text-3)', fontFamily: 'var(--tawn-font-mono)' }}>{recallStatus}</span>}
@@ -257,11 +292,13 @@ export default function Memory() {
                 </>
               ) : feedLoading ? (
                 <div style={{ padding: '24px 0', fontSize: 13, color: 'var(--tawn-text-2)', textAlign: 'center' }}>loading…</div>
-              ) : feedChunks.length > 0 ? (
+              ) : groups.length > 0 ? (
                 <>
-                  {feedChunks.map((c) => (
-                    <FeedCard key={c.id} chunk={c} onClick={() => navigate(`/memory/chunk/${c.id}`)} />
-                  ))}
+                  <div style={{ paddingTop: 14 }}>
+                    {groups.map((g) => (
+                      <GroupCardView key={g.group_key} card={g} onOpen={(id) => navigate(`/memory/chunk/${id}`)} />
+                    ))}
+                  </div>
                   <div style={{ display: 'flex', gap: 8, justifyContent: 'center', padding: '14px 0' }}>
                     {feedOffset > 0 && (
                       <Button variant="secondary" size="sm" onClick={() => loadFeed(feedOffset - LIMIT)}>← prev</Button>
@@ -282,9 +319,15 @@ export default function Memory() {
               <div style={{ height: 4 }} />
             </div>
           ) : (
-            <div style={{ padding: '20px 8px' }}>
-              <MemoryGraph size={480} />
-              <p style={{ fontSize: 12, color: 'var(--tawn-text-3)', textAlign: 'center', marginTop: 4, fontFamily: 'var(--tawn-font-mono)' }}>entity graph — domain connections</p>
+            <div style={{ padding: '12px 8px' }}>
+              <EntityGraph
+                data={graph}
+                height={430}
+                onSelect={(label) => navigate(`/wiki?entity=${encodeURIComponent(label)}`)}
+              />
+              <p style={{ fontSize: 11.5, color: 'var(--tawn-text-3)', textAlign: 'center', marginTop: 6, fontFamily: 'var(--tawn-font-mono)' }}>
+                {graph.nodes.length} entities · click one to open its wiki page
+              </p>
             </div>
           )}
         </Card>
@@ -317,10 +360,22 @@ export default function Memory() {
               Re-index raw/, granted read paths, and chat history into searchable chunks.
             </p>
             <Button variant="secondary" onClick={handleCompile}>run compile</Button>
+            {enrich && (
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--tawn-line)' }}>
+                <div style={{ fontSize: 12, color: 'var(--tawn-text-2)', marginBottom: 8 }}>
+                  {enrich.chunks_enriched}/{enrich.chunks_total} summarised
+                  {enrich.pending > 0 && ` · ${enrich.pending} pending`}
+                </div>
+                <Button variant="secondary" onClick={handleEnrich} disabled={enrichBusy}>
+                  {enrichBusy ? 'enriching…' : 'enrich next 200'}
+                </Button>
+                {enrichMsg && <p style={{ fontSize: 12, color: 'var(--tawn-text-2)', marginTop: 8, fontFamily: 'var(--tawn-font-mono)' }}>{enrichMsg}</p>}
+              </div>
+            )}
             {compileStatus && <p style={{ fontSize: 12, color: 'var(--tawn-text-2)', marginTop: 8, fontFamily: 'var(--tawn-font-mono)' }}>{compileStatus}</p>}
           </Card>
         </div>
       </div>
-    </div>
+    </>
   )
 }

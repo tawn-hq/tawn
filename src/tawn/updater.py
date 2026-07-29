@@ -136,6 +136,34 @@ def trigger_update() -> dict:
     return {"ok": True, "method": method}
 
 
+def _is_newer(latest: str | None, current: str) -> bool:
+    """True only when `latest` is genuinely ahead of `current`.
+
+    A plain `!=` reported "update available" whenever the two differed —
+    including when the local build was *ahead* of PyPI, which told the user
+    to update to an older release.
+    """
+    if not latest:
+        return False
+    try:
+        from packaging.version import InvalidVersion, Version
+
+        try:
+            return Version(latest) > Version(current)
+        except InvalidVersion:
+            return latest != current
+    except ImportError:
+        # packaging ships with pip/setuptools but is not a declared dependency;
+        # a tuple compare is close enough for the usual X.Y.Z shape.
+        def _parts(v: str) -> tuple:
+            return tuple(int(p) if p.isdigit() else 0 for p in v.split(".")[:3])
+
+        try:
+            return _parts(latest) > _parts(current)
+        except (ValueError, AttributeError):
+            return latest != current
+
+
 def get_status() -> UpdateStatus:
     from tawn import __version__
     method = detect_method()
@@ -144,7 +172,7 @@ def get_status() -> UpdateStatus:
             method=method,
             current=__version__,
             latest=_state["latest"],
-            update_available=bool(_state["latest"] and _state["latest"] != __version__),
+            update_available=_is_newer(_state["latest"], __version__),
             last_check=_state["last_check"],
             last_update=_state["last_update"],
             running=_state["running"],

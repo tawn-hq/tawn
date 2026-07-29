@@ -37,12 +37,85 @@ class GeminiProvider:
                 system = m.content if system is None else f"{system}\n{m.content}"
             else:
                 role = "model" if m.role == "assistant" else "user"
-                contents.append({"role": role, "parts": [{"text": m.content}]})
+                parts: list[dict] = [
+                    {
+                        "inline_data": {
+                            "mime_type": img.get("media_type", "image/png"),
+                            "data": img.get("data", ""),
+                        }
+                    }
+                    for img in getattr(m, "images", None) or []
+                ]
+                if m.content or not parts:
+                    parts.append({"text": m.content})
+                contents.append({"role": role, "parts": parts})
         return system, contents
 
-    def complete(self, msgs: list[Message], model: str | None = None) -> ModelResponse:
+    def complete(
+        self,
+        msgs: list[Message],
+        model: str | None = None,
+        tools: list | None = None,
+    ) -> ModelResponse:
         model = model or self.model
         system, contents = self._split(msgs)
+        use_tools = bool(tools) and model not in self._NO_NATIVE_TOOLS
+        if use_tools:
+            from tawn.model.toolwire import gemini_parts, gemini_tools
+
+            contents = gemini_parts(msgs)
+            config = genai_types.GenerateContentConfig(
+                system_instruction=system, tools=gemini_tools(tools)
+            )
+        elif tools:
+            return self._complete_prompted(msgs, model, tools)
+        else:
+            config = genai_types.GenerateContentConfig(system_instruction=system)
+        try:
+            resp = self._client.models.generate_content(
+                model=model, contents=contents, config=config
+            )
+        except Exception as exc:
+            if use_tools and _is_unsupported_tools_error(exc):
+                self._NO_NATIVE_TOOLS.add(model)
+                return self._complete_prompted(msgs, model, tools)
+            raise ModelError(
+                self._redact(f"gemini: {exc}"),
+                kind=self.classify_error(exc),
+                provider=self.name,
+            ) from exc
+        usage = getattr(resp, "usage_metadata", None)
+        tool_calls = []
+        if use_tools:
+            from tawn.model.toolwire import gemini_calls
+
+            tool_calls = gemini_calls(resp)
+        # `resp.text` raises on a candidate that is purely a function call.
+        try:
+            text = resp.text or ""
+        except Exception:
+            text = ""
+        return ModelResponse(
+            text=text,
+            model=model,
+            provider=self.name,
+            tokens_in=getattr(usage, "prompt_token_count", 0) or 0,
+            tokens_out=getattr(usage, "candidates_token_count", 0) or 0,
+            tool_calls=tool_calls,
+        )
+
+    #: Models whose endpoint rejected the tools API, so the next call uses the
+    #: prompted protocol directly.
+    _NO_NATIVE_TOOLS: set[str] = set()
+
+    def _complete_prompted(
+        self, msgs: list[Message], model: str, tools: list
+    ) -> ModelResponse:
+        """Tools described in the prompt, for a model with no tools API."""
+        from tawn.model.prompted import inject_tools, parse_prompted_calls
+
+        prepared = inject_tools(msgs, tools)
+        system, contents = self._split(prepared)
         config = genai_types.GenerateContentConfig(system_instruction=system)
         try:
             resp = self._client.models.generate_content(
@@ -54,13 +127,19 @@ class GeminiProvider:
                 kind=self.classify_error(exc),
                 provider=self.name,
             ) from exc
+        try:
+            raw = resp.text or ""
+        except Exception:
+            raw = ""
+        calls, cleaned = parse_prompted_calls(raw)
         usage = getattr(resp, "usage_metadata", None)
         return ModelResponse(
-            text=resp.text or "",
+            text=cleaned,
             model=model,
             provider=self.name,
             tokens_in=getattr(usage, "prompt_token_count", 0) or 0,
             tokens_out=getattr(usage, "candidates_token_count", 0) or 0,
+            tool_calls=calls,
         )
 
     def stream_complete(self, msgs: list[Message], model: str | None = None) -> Iterator[StreamChunk]:
@@ -136,3 +215,15 @@ class GeminiProvider:
                 return ErrorKind.SERVER_ERROR
             return ErrorKind.UNKNOWN
         return ErrorKind.UNKNOWN
+
+
+def _is_unsupported_tools_error(exc: Exception) -> bool:
+    """Whether the endpoint rejected the *tools API* rather than the request."""
+    text = str(exc).lower()
+    return "tool" in text and any(
+        phrase in text
+        for phrase in (
+            "does not support", "not supported", "unsupported",
+            "unrecognized", "unknown parameter", "invalid",
+        )
+    )

@@ -52,8 +52,15 @@ class OllamaProvider:
         self.model = model
         self._client = client or ollama.Client(host=self.base_url)
 
-    def complete(self, msgs: list[Message], model: str | None = None) -> ModelResponse:
+    def complete(
+        self,
+        msgs: list[Message],
+        model: str | None = None,
+        tools: list | None = None,
+    ) -> ModelResponse:
         model = model or self.model
+        if tools:
+            return self._complete_with_tools(msgs, model, tools)
         messages = [{"role": m.role, "content": m.content} for m in msgs]
         try:
             resp = self._client.chat(model=model, messages=messages)
@@ -69,6 +76,82 @@ class OllamaProvider:
             provider=self.name,
             tokens_in=resp.prompt_eval_count or 0,
             tokens_out=resp.eval_count or 0,
+        )
+
+    #: Models found not to support the native tools API, so the next call goes
+    #: straight to prompted mode instead of paying for the failure again.
+    _NO_NATIVE_TOOLS: set[str] = set()
+
+    @staticmethod
+    def _is_unsupported_tools_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "tool" in text and any(
+            phrase in text
+            for phrase in ("does not support", "not supported", "unsupported", "invalid")
+        )
+
+    def _complete_with_tools(
+        self, msgs: list[Message], model: str, tools: list
+    ) -> ModelResponse:
+        """Native tool calling where the model has it, prompted where it does not.
+
+        Support is discovered by trying, not by consulting a hardcoded list —
+        Ollama's tool-capable model set changes with every release, and a stale
+        list would silently downgrade models that had gained support.
+        """
+        from tawn.model.toolwire import openai_messages, openai_tools
+
+        if model not in self._NO_NATIVE_TOOLS:
+            try:
+                resp = self._client.chat(
+                    model=model,
+                    messages=openai_messages(msgs),
+                    tools=openai_tools(tools),
+                )
+            except Exception as exc:
+                if not self._is_unsupported_tools_error(exc):
+                    raise ModelError(
+                        f"ollama: {exc} ({type(exc).__name__})",
+                        kind=self.classify_error(exc),
+                        provider=self.name,
+                    ) from exc
+                self._NO_NATIVE_TOOLS.add(model)
+            else:
+                return ModelResponse(
+                    text=getattr(resp.message, "content", "") or "",
+                    model=model,
+                    provider=self.name,
+                    tokens_in=getattr(resp, "prompt_eval_count", 0) or 0,
+                    tokens_out=getattr(resp, "eval_count", 0) or 0,
+                    tool_calls=_ollama_calls(resp),
+                )
+
+        return self._complete_prompted(msgs, model, tools)
+
+    def _complete_prompted(
+        self, msgs: list[Message], model: str, tools: list
+    ) -> ModelResponse:
+        from tawn.model.prompted import inject_tools, parse_prompted_calls
+
+        prepared = inject_tools(msgs, tools)
+        messages = [{"role": m.role, "content": m.content} for m in prepared]
+        try:
+            resp = self._client.chat(model=model, messages=messages)
+        except Exception as exc:
+            raise ModelError(
+                f"ollama: {exc} ({type(exc).__name__})",
+                kind=self.classify_error(exc),
+                provider=self.name,
+            ) from exc
+        raw = getattr(resp.message, "content", "") or ""
+        calls, cleaned = parse_prompted_calls(raw)
+        return ModelResponse(
+            text=cleaned,
+            model=model,
+            provider=self.name,
+            tokens_in=getattr(resp, "prompt_eval_count", 0) or 0,
+            tokens_out=getattr(resp, "eval_count", 0) or 0,
+            tool_calls=calls,
         )
 
     def stream_complete(self, msgs: list[Message], model: str | None = None) -> Iterator[StreamChunk]:
@@ -147,3 +230,33 @@ class OllamaProvider:
                 return ErrorKind.SERVER_ERROR
             return ErrorKind.UNKNOWN
         return ErrorKind.UNKNOWN
+
+
+def _ollama_calls(resp) -> list:
+    """Decode Ollama's native tool calls, which follow the OpenAI shape."""
+    from tawn.model.types import ToolCall
+
+    raw = getattr(getattr(resp, "message", None), "tool_calls", None) or []
+    out = []
+    for i, c in enumerate(raw):
+        fn = getattr(c, "function", None) or {}
+        name = getattr(fn, "name", None) or (fn.get("name") if isinstance(fn, dict) else "")
+        args = getattr(fn, "arguments", None)
+        if args is None and isinstance(fn, dict):
+            args = fn.get("arguments")
+        if isinstance(args, str):
+            import json as _json
+
+            try:
+                args = _json.loads(args)
+            except Exception:
+                args = {}
+        out.append(
+            ToolCall(
+                # Ollama issues no call ids; the loop needs one to pair results.
+                id=getattr(c, "id", None) or f"ollama-{i}",
+                name=str(name or ""),
+                arguments=dict(args or {}),
+            )
+        )
+    return out

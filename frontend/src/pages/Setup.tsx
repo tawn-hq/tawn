@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react'
 import Layout from '../components/Layout'
 import { Card, Button, Input, Select, Badge } from '../ds'
+import { useErrors } from '../components/Errors'
 import {
   postSetupInit,
   postSetupDb,
@@ -49,6 +50,8 @@ function LogBox({ lines }: { lines: string[] }) {
 }
 
 export function SetupWizard() {
+  const { report } = useErrors()
+  const reportError = (e: unknown) => report(e instanceof Error ? e.message : String(e))
   const [busy, setBusy] = useState(false)
   const [log, setLog] = useState<string[]>([])
   const push = (line: string) => setLog((l) => [...l, line])
@@ -70,9 +73,9 @@ export function SetupWizard() {
   const [keyState, setKeyState] = useState<StepState>('idle')
 
   useEffect(() => {
-    getSetupHost().then((r) => { setHostOk(r.ok); setHostState(r.ok ? 'ok' : 'idle') }).catch(() => {})
-    getSetupTunnel().then((r) => { setTunnelUrl(r.url); setTunnelActive(r.active); if (r.active) setTunnelState('ok') }).catch(() => {})
-    PROVIDERS.forEach((p) => getKeyStatus(p).then((r) => setKeyStates((s) => ({ ...s, [p]: r.status }))).catch(() => {}))
+    getSetupHost().then((r) => { setHostOk(r.ok); setHostState(r.ok ? 'ok' : 'idle') }).catch(reportError)
+    getSetupTunnel().then((r) => { setTunnelUrl(r.url); setTunnelActive(r.active); if (r.active) setTunnelState('ok') }).catch(reportError)
+    PROVIDERS.forEach((p) => getKeyStatus(p).then((r) => setKeyStates((s) => ({ ...s, [p]: r.status }))).catch(reportError))
   }, [])
 
   async function runInit() {
@@ -224,7 +227,7 @@ export function SetupWizard() {
               <div style={{ fontSize: 12, color: 'var(--tawn-text-2)', marginBottom: 6, lineHeight: 1.5 }}>
                 Share this URL with trusted collaborators. Anyone with the link can access your twin's web viewer — only share with people you trust.
               </div>
-              <Button size="sm" variant="secondary" onClick={() => navigator.clipboard?.writeText(tunnelUrl).catch(() => {})}>copy url</Button>
+              <Button size="sm" variant="secondary" onClick={() => navigator.clipboard?.writeText(tunnelUrl).catch(reportError)}>copy url</Button>
             </div>
           </div>
         ) : (

@@ -137,7 +137,7 @@ def test_default_router_enables_every_keyed_provider_in_order(tmp_path, monkeypa
     router = default_router(tmp_path)
     assert [p.name for p in router.providers] == [
         "anthropic", "openai", "gemini", "deepseek",
-        "openrouter", "kimi", "qwen", "groq", "grok", "ollama",
+        "openrouter", "kimi", "qwen", "groq", "grok", "mistral", "ollama",
     ]
 
 
@@ -169,7 +169,8 @@ def test_preference_moves_provider_first_and_pins_model(tmp_path, monkeypatch):
     assert router.providers[0].model == "deepseek-reasoner"
     # rest of the chain intact as failover
     assert [p.name for p in router.providers[1:]] == [
-        "anthropic", "openai", "gemini", "openrouter", "kimi", "qwen", "groq", "grok", "ollama"
+        "anthropic", "openai", "gemini", "openrouter", "kimi", "qwen", "groq", "grok",
+        "mistral", "ollama"
     ]
 
 

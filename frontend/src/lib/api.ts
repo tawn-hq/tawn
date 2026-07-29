@@ -56,10 +56,18 @@ export interface Grants {
   observe: string[]
   system: boolean
   mcp: string[]
+  net: boolean
+  shell: boolean
+}
+
+export interface GrantsSaved {
+  ok: boolean
+  confirmed: boolean
+  message: string
 }
 
 export const getGrants = (): Promise<Grants> => _fetch('/api/grants')
-export const putGrants = (grants: Grants): Promise<{ ok: boolean }> =>
+export const putGrants = (grants: Grants): Promise<GrantsSaved> =>
   _fetch('/api/grants', { method: 'PUT', body: JSON.stringify(grants) })
 export const confirmGrants = (): Promise<{ ok: boolean; error?: string }> =>
   _fetch('/api/grants/confirm', { method: 'POST' })
@@ -309,3 +317,387 @@ export const getCompileStatus = (): Promise<CompileStatus> =>
 
 export const postCompile = (): Promise<CompileResult> =>
   _fetch('/api/compile', { method: 'POST' })
+
+// ── Grouped feed ──────────────────────────────────────────────────────────────
+
+export interface GroupChunk {
+  id: number
+  title: string | null
+  summary: string
+  stale: boolean
+}
+
+export interface GroupCard {
+  group_key: string
+  title: string | null
+  summary: string | null
+  domain: string | null
+  chunk_count: number
+  enriched: boolean
+  latest_at: string | null
+  chunks: GroupChunk[]
+}
+
+export interface GroupPage {
+  total: number
+  offset: number
+  limit: number
+  groups: GroupCard[]
+}
+
+export const getGroups = (opts?: { domain?: string; limit?: number; offset?: number }): Promise<GroupPage> => {
+  const params = new URLSearchParams()
+  if (opts?.domain) params.set('domain', opts.domain)
+  if (opts?.limit !== undefined) params.set('limit', String(opts.limit))
+  if (opts?.offset !== undefined) params.set('offset', String(opts.offset))
+  return _fetch(`/api/groups?${params}`)
+}
+
+// ── Wiki ──────────────────────────────────────────────────────────────────────
+
+export interface WikiTree {
+  ready: boolean
+  domains: { name: string; path: string }[]
+  entities: { name: string; path: string }[]
+}
+
+export interface WikiLink {
+  id: number
+  label: string
+  relation: string
+  weight: number
+}
+
+export interface WikiEntity {
+  id: number
+  canonical: string
+  domain: string | null
+  confidence: string | null
+  first_seen: string | null
+  related: WikiLink[]
+  backlinks: WikiLink[]
+}
+
+export interface GraphNode {
+  id: number
+  label: string
+  domain: string | null
+  confidence: string | null
+}
+
+export interface GraphData {
+  nodes: GraphNode[]
+  links: { source: number; target: number; relation: string; weight: number }[]
+  clusters?: { domain: string; count: number }[]
+}
+
+export const getWikiTree = (): Promise<WikiTree> => _fetch('/api/wiki/tree')
+
+export const getWikiPage = (path: string): Promise<{ path: string; content: string }> =>
+  _fetch(`/api/wiki/page?path=${encodeURIComponent(path)}`)
+
+export const getWikiEntity = (name: string): Promise<WikiEntity> =>
+  _fetch(`/api/wiki/entity/${encodeURIComponent(name)}`)
+
+export const getWikiGraph = (opts?: { domain?: string; entity?: string; depth?: number; cluster?: boolean; limit?: number }): Promise<GraphData> => {
+  const params = new URLSearchParams()
+  if (opts?.domain) params.set('domain', opts.domain)
+  if (opts?.entity) params.set('entity', opts.entity)
+  if (opts?.depth !== undefined) params.set('depth', String(opts.depth))
+  if (opts?.cluster) params.set('cluster', 'true')
+  if (opts?.limit !== undefined) params.set('limit', String(opts.limit))
+  return _fetch(`/api/wiki/graph?${params}`)
+}
+
+// ── Document reconstruction ───────────────────────────────────────────────────
+
+export interface GroupDocument {
+  group_key: string
+  title: string
+  summary: string | null
+  domain: string | null
+  body: string
+  chunk_count: number
+  enriched_chunks: number
+  source_paths: string[]
+  chunk_ids: number[]
+  stale: boolean
+}
+
+export const getGroupDocument = (groupKey: string): Promise<GroupDocument> =>
+  _fetch(`/api/groups/document?group_key=${encodeURIComponent(groupKey)}`)
+
+// ── Personal notes ────────────────────────────────────────────────────────────
+
+export interface PersonalNote {
+  id: string
+  note_id: string | null
+  file: string
+  index: number
+  type: string
+  domain: string | null
+  confidence: string
+  asof: string | null
+  ttl_days: number | null
+  body: string
+}
+
+export interface NotePage {
+  total: number
+  offset: number
+  limit: number
+  notes: PersonalNote[]
+}
+
+export const getNotes = (opts?: { domain?: string; limit?: number; offset?: number }): Promise<NotePage> => {
+  const p = new URLSearchParams()
+  if (opts?.domain) p.set('domain', opts.domain)
+  if (opts?.limit !== undefined) p.set('limit', String(opts.limit))
+  if (opts?.offset !== undefined) p.set('offset', String(opts.offset))
+  return _fetch(`/api/notes?${p}`)
+}
+
+export const putNote = (id: string, body: { body?: string; domain?: string | null }): Promise<PersonalNote> =>
+  _fetch(`/api/notes/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) })
+
+export const deleteNote = (id: string): Promise<{ ok: boolean; deleted: string }> =>
+  _fetch(`/api/notes/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+// ── Enrichment ────────────────────────────────────────────────────────────────
+
+export interface EnrichStatus {
+  chunks_total: number
+  chunks_enriched: number
+  groups_total: number
+  groups_enriched: number
+  pending: number
+}
+
+export interface EnrichResult {
+  ok: boolean
+  chunks_enriched: number
+  groups_enriched: number
+  failed: number
+  error: string | null
+}
+
+export const getEnrichStatus = (): Promise<EnrichStatus> => _fetch('/api/enrich/status')
+
+export const postEnrich = (limit = 200, cloud = false): Promise<EnrichResult> =>
+  _fetch('/api/enrich', { method: 'POST', body: JSON.stringify({ limit, cloud }) })
+
+// ── Observability ─────────────────────────────────────────────────────────────
+
+export interface AuditEvent {
+  ts: string
+  op: string
+  target: string
+  ok: boolean
+  detail: string
+  actor?: string
+  chain: string
+}
+
+export interface EventPage {
+  total: number
+  offset: number
+  limit: number
+  entries: AuditEvent[]
+}
+
+export interface ChainStatus {
+  intact: boolean
+  entries: number
+  first_break_index: number | null
+  first_break_ts: string | null
+}
+
+export interface SpendGroup {
+  operation?: string
+  provider?: string
+  caller?: string
+  calls: number
+  cost_usd: number
+  unpriced: number
+}
+
+export interface SpendSummary {
+  total_calls: number
+  total_cost_usd: number
+  unpriced_calls: number
+  total_tokens_in: number
+  total_tokens_out: number
+  by_operation: SpendGroup[]
+  by_provider: SpendGroup[]
+  by_caller: SpendGroup[]
+  by_day: { day: string; calls: number; cost_usd: number }[]
+}
+
+export interface SpendStatus {
+  last_reconciled: string | null
+  entries_seen: number
+  pending_bytes: number
+}
+
+export const getEvents = (opts?: { actor?: string; op?: string; limit?: number; offset?: number }): Promise<EventPage> => {
+  const p = new URLSearchParams()
+  if (opts?.actor) p.set('actor', opts.actor)
+  if (opts?.op) p.set('op', opts.op)
+  if (opts?.limit !== undefined) p.set('limit', String(opts.limit))
+  if (opts?.offset !== undefined) p.set('offset', String(opts.offset))
+  return _fetch(`/api/observability/events?${p}`)
+}
+
+export const getVerify = (): Promise<ChainStatus> => _fetch('/api/observability/verify')
+export const getSpend = (): Promise<SpendSummary> => _fetch('/api/observability/spend')
+export const getSpendStatus = (): Promise<SpendStatus> => _fetch('/api/observability/spend/status')
+export const postReconcile = (): Promise<{ entries: number; rollups: number }> =>
+  _fetch('/api/observability/reconcile', { method: 'POST' })
+
+// ── Observer ──────────────────────────────────────────────────────────────────
+
+export interface ObserverSession {
+  id: number
+  project: string
+  started_at: string | null
+  ended_at: string | null
+  closed_by: string | null
+  event_count: number
+  lines_added: number
+  lines_removed: number
+  attribution: string
+  note_path: string | null
+  note_state: string
+}
+
+export interface ObserverEvent {
+  path: string
+  kind: string
+  actor: string
+  confidence: string
+  basis: string
+  lines_added: number
+  lines_removed: number
+  ts: string | null
+}
+
+export const getObserverSessions = (limit = 20): Promise<{ sessions: ObserverSession[] }> =>
+  _fetch(`/api/observer/sessions?limit=${limit}`)
+
+export const getObserverEvents = (id: number): Promise<{ events: ObserverEvent[] }> =>
+  _fetch(`/api/observer/sessions/${id}/events`)
+
+export const postObserverReview = (project?: string): Promise<{ closed: number; notes_written: number }> =>
+  _fetch(`/api/observer/review${project ? `?project=${encodeURIComponent(project)}` : ''}`, { method: 'POST' })
+
+// ── Tools: MCP servers, skills, generated tools ──────────────────────────────
+
+export interface McpServerRow {
+  name: string
+  transport: string
+  enabled: boolean
+  granted: boolean
+  callable: boolean
+  source: string
+  env_keys: string[]
+  tool_count: number
+}
+
+export interface DiscoveredServer {
+  name: string
+  transport: string
+  source: string
+  env_keys: string[]
+  known: boolean
+}
+
+export interface SkillRow {
+  name: string
+  description: string
+  body: string
+  source: string
+  imported_from: string | null
+}
+
+export interface GeneratedTool {
+  name: string
+  description: string
+  capabilities: string[]
+  enabled: boolean
+  granted: boolean
+  created_from: string
+}
+
+export const getMcpServers = (): Promise<{ servers: McpServerRow[] }> =>
+  _fetch('/api/tools/mcp/servers')
+
+export const getDiscoveredServers = (): Promise<{ servers: DiscoveredServer[] }> =>
+  _fetch('/api/tools/mcp/discovered')
+
+export const adoptServers = (): Promise<{ added: number; found: number }> =>
+  _fetch('/api/tools/mcp/adopt', { method: 'POST' })
+
+export const mcpServerAction = (
+  name: string,
+  action: 'enable' | 'disable' | 'test' | 'remove',
+): Promise<{ ok: boolean; error?: string; enabled?: boolean; granted?: boolean; callable?: boolean; tool_count?: number }> =>
+  _fetch(`/api/tools/mcp/${encodeURIComponent(name)}/${action}`, { method: 'POST' })
+
+export const getServerTools = (name: string): Promise<{ tools: { name: string; description: string }[] }> =>
+  _fetch(`/api/tools/mcp/${encodeURIComponent(name)}/tools`)
+
+export const getSkills = (): Promise<{ skills: SkillRow[]; targets: string[] }> =>
+  _fetch('/api/tools/skills')
+
+export const saveSkillApi = (body: { name: string; description: string; body: string }): Promise<{ ok: boolean }> =>
+  _fetch('/api/tools/skills', { method: 'POST', body: JSON.stringify(body) })
+
+export const deleteSkill = (name: string): Promise<{ ok: boolean }> =>
+  _fetch(`/api/tools/skills/${encodeURIComponent(name)}`, { method: 'DELETE' })
+
+export const syncSkills = (): Promise<{ written: string[]; skipped: string[]; conflicts: string[]; targets: string[] }> =>
+  _fetch('/api/tools/skills/sync', { method: 'POST' })
+
+export const importSkills = (dryRun = true): Promise<{ imported: string[]; skipped: string[]; conflicts: string[]; dry_run: boolean; found: number }> =>
+  _fetch(`/api/tools/skills/import?dry_run=${dryRun}`, { method: 'POST' })
+
+export const getGeneratedTools = (): Promise<{ tools: GeneratedTool[] }> =>
+  _fetch('/api/tools/generated')
+
+export const showGeneratedTool = (name: string): Promise<{ ok: boolean; manifest?: Record<string, unknown>; source?: string; error?: string }> =>
+  _fetch(`/api/tools/generated/${encodeURIComponent(name)}`)
+
+export const generateTool = (description: string, cloud = false): Promise<{ ok: boolean; name?: string; capabilities?: string[]; error?: string; kind?: string }> =>
+  _fetch('/api/tools/generated', { method: 'POST', body: JSON.stringify({ description, cloud }) })
+
+export const generatedToolAction = (
+  name: string,
+  action: 'enable' | 'disable' | 'test' | 'remove',
+): Promise<{ ok: boolean; enabled?: boolean; output?: string; error?: string }> =>
+  _fetch(`/api/tools/generated/${encodeURIComponent(name)}/${action}`, { method: 'POST' })
+
+
+// ── Chat attachments ─────────────────────────────────────────────────────────
+
+export interface AttachmentMeta {
+  ok: boolean
+  id?: string
+  name?: string
+  format?: string
+  chars?: number
+  truncated?: boolean
+  warnings?: string[]
+  error?: string
+}
+
+export async function uploadAttachment(file: File): Promise<AttachmentMeta> {
+  const form = new FormData()
+  form.append('file', file)
+  // No Content-Type header: the browser must set the multipart boundary.
+  const res = await fetch('/api/chat/attach', { method: 'POST', body: form })
+  if (!res.ok) return { ok: false, error: `${res.status} ${res.statusText}` }
+  return res.json() as Promise<AttachmentMeta>
+}
+
+export const removeAttachment = (id: string): Promise<{ ok: boolean }> =>
+  _fetch(`/api/chat/attach/${encodeURIComponent(id)}`, { method: 'DELETE' })

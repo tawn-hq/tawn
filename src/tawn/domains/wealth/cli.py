@@ -3,7 +3,7 @@ part of the domain plugin migration; behavior unchanged."""
 
 import typer
 
-from tawn.capability.audit import AuditLog
+from tawn.capability.audit import AuditLog, audit_path
 from tawn.db import init_db, make_engine
 from tawn.domains.base import mediated_fs
 from tawn.home import tawn_home
@@ -55,7 +55,7 @@ def wealth_snapshot(
     engine = make_engine()
     init_db(engine)
     state = take_snapshot(
-        engine, holdings, ngx_prices, us_prices, source, AuditLog(home / "audit.log")
+        engine, holdings, ngx_prices, us_prices, source, AuditLog(audit_path(home))
     )
     typer.echo(f"snapshot stored — total ₦{state['total_ngn']} (prices: {source})")
 
@@ -96,7 +96,7 @@ def wealth_schedule(
     for f in files:
         typer.echo(f"wrote {f}")
     ok, msg = enable_timer()
-    AuditLog(tawn_home() / "audit.log").record(
+    AuditLog(audit_path(tawn_home())).record(
         "wealth.schedule", f"OnCalendar={every}", ok=ok, detail=msg, actor="cli"
     )
     if not ok:

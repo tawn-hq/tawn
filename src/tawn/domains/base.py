@@ -12,7 +12,7 @@ from pathlib import Path
 import typer
 from fastapi import APIRouter
 
-from tawn.capability.audit import AuditLog
+from tawn.capability.audit import AuditLog, audit_path
 from tawn.capability.fs import MediatedFS
 from tawn.capability.grants import load_verified
 from tawn.home import tawn_home
@@ -30,4 +30,4 @@ class DomainSpec:
 def mediated_fs(home: Path | None = None) -> MediatedFS:
     home = home or tawn_home()
     grants = load_verified(home / "grants.yaml")
-    return MediatedFS(grants, AuditLog(home / "audit.log"), home=home)
+    return MediatedFS(grants, AuditLog(audit_path(home)), home=home)

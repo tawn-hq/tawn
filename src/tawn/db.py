@@ -3,6 +3,7 @@ No Alembic yet — decision log 2026-07-07: create_all until Stage 3."""
 
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import DateTime, Index, Integer, String, Text, create_engine
 from sqlalchemy.engine import Engine
@@ -62,29 +63,65 @@ def make_engine(url: str | None = None, *, pooled: bool = False) -> Engine:
     )
 
 
+def migrations_dir() -> Path:
+    """Path to the packaged migrations.
+
+    Inside the package, not at the repo root: a repo-root `alembic/` resolves
+    fine in an editable checkout and is simply absent from a wheel, so
+    `pip install tawn` would silently ship no migrations at all.
+    """
+    return Path(__file__).parent / "migrations"
+
+
+def _alembic_cfg(url: str):
+    from alembic.config import Config
+
+    here = migrations_dir()
+    cfg = Config(str(here / "alembic.ini"))
+    cfg.set_main_option("script_location", str(here))
+    # Escape %: ConfigParser interpolates them, and DSNs can carry
+    # percent-encoded characters (e.g. a password with '@' → '%40').
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    return cfg
+
+
+def run_migrations(engine: Engine) -> None:
+    """Bring a database up to head.
+
+    Deliberately non-fatal: a migration problem should leave the CLI able to
+    start and tell the user what is wrong, not crash on import. `tawn doctor`
+    surfaces the current revision.
+    """
+    from alembic import command
+
+    try:
+        cfg = _alembic_cfg(str(engine.url))
+        cfg.attributes["connection"] = engine
+        command.upgrade(cfg, "head")
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        import logging
+
+        logging.getLogger(__name__).warning("migrations skipped: %s", exc)
+
+
 def init_db(engine: Engine) -> None:
     Base.metadata.create_all(engine)
     _memory_schema.Base.metadata.create_all(engine)
     _fed_schema.Base.metadata.create_all(engine)
-    _migrate_columns(engine)
+    run_migrations(engine)
 
+    # Fold any legacy audit.log into audit.jsonl. Locked and idempotent, so
+    # concurrent CLI / web-daemon / MCP starts are safe. Non-fatal by design:
+    # observability must never prevent the process from starting.
+    try:
+        from tawn.capability.audit import migrate_audit_log
+        from tawn.home import tawn_home
 
-def _migrate_columns(engine: Engine) -> None:
-    """Add new columns to existing tables that predate them."""
-    _new_cols = [
-        ("federation_records", "domain", "VARCHAR(64)"),
-        ("federation_records", "project", "VARCHAR(128)"),
-    ]
-    with engine.connect() as conn:
-        from sqlalchemy import text
-        for table, col, col_type in _new_cols:
-            try:
-                conn.execute(text(
-                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"
-                ))
-                conn.commit()
-            except Exception:
-                conn.rollback()
+        migrate_audit_log(tawn_home())
+    except Exception as exc:  # noqa: BLE001 — see comment above
+        import logging
+
+        logging.getLogger(__name__).warning("audit migration skipped: %s", exc)
 
 
 @contextmanager

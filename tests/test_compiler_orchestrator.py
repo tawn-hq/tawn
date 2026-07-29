@@ -43,14 +43,14 @@ def db(home):
         yield s
 
 
-@patch("tawn.compiler.compiler.embed_text", return_value=[0.1] * 1024)
+@patch("tawn.compiler.compiler.embed_texts", side_effect=lambda texts, home, batch_size=32: ([[0.1] * 1024 for _ in texts], "fake-embed", 1024))
 def test_compile_empty_raw_succeeds(mock_embed, home, db):
     result = run_compile(home, db)
     assert result.ok is True
     assert result.files_processed == 0
 
 
-@patch("tawn.compiler.compiler.embed_text", return_value=[0.1] * 1024)
+@patch("tawn.compiler.compiler.embed_texts", side_effect=lambda texts, home, batch_size=32: ([[0.1] * 1024 for _ in texts], "fake-embed", 1024))
 def test_compile_processes_new_note(mock_embed, home, db):
     note = home / "raw" / "agent-notes" / "2026-07-20.md"
     note.write_text("---\ntype: decision\ndomain: work\n---\nUsing pgvector.\n")
@@ -61,7 +61,7 @@ def test_compile_processes_new_note(mock_embed, home, db):
     assert db.query(Chunk).count() >= 1
 
 
-@patch("tawn.compiler.compiler.embed_text", return_value=[0.1] * 1024)
+@patch("tawn.compiler.compiler.embed_texts", side_effect=lambda texts, home, batch_size=32: ([[0.1] * 1024 for _ in texts], "fake-embed", 1024))
 def test_compile_logs_to_compile_log(mock_embed, home, db):
     run_compile(home, db)
     assert db.query(CompileLog).count() == 1
@@ -70,7 +70,7 @@ def test_compile_logs_to_compile_log(mock_embed, home, db):
     assert log.finished_at is not None
 
 
-@patch("tawn.compiler.compiler.embed_text", return_value=[0.1] * 1024)
+@patch("tawn.compiler.compiler.embed_texts", side_effect=lambda texts, home, batch_size=32: ([[0.1] * 1024 for _ in texts], "fake-embed", 1024))
 def test_compile_status_returns_dict(mock_embed, home, db):
     run_compile(home, db)
     status = compile_status(home, db)
@@ -100,7 +100,7 @@ def test_should_compile_false_within_quiet_period(home):
     assert should_compile(home, quiet_seconds=30) is False
 
 
-@patch("tawn.compiler.compiler.embed_text", return_value=[0.1] * 1024)
+@patch("tawn.compiler.compiler.embed_texts", side_effect=lambda texts, home, batch_size=32: ([[0.1] * 1024 for _ in texts], "fake-embed", 1024))
 def test_rebuild_clears_chunks(mock_embed, home, db):
     note = home / "raw" / "agent-notes" / "note.md"
     note.write_text("First compile.\n")

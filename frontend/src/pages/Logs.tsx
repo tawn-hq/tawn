@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import AppNav from '../components/AppNav'
 import { Button, Badge } from '../ds'
 
 interface LogData {
@@ -32,7 +31,7 @@ export function LogsPanel() {
     fetch(`/api/logs?n=${n}`)
       .then((r) => r.json())
       .then((d: LogData) => setData(d))
-      .catch(() => {})
+      .catch(() => setData({ lines: ['could not load logs — is the server running?'] } as LogData))
   }
 
   useEffect(() => { load() }, [n])
@@ -104,12 +103,11 @@ export function LogsPanel() {
 
 export default function Logs() {
   return (
-    <div style={{ background: 'var(--tawn-bg)', minHeight: '100vh' }}>
-      <AppNav />
+    <>
       <div style={{ maxWidth: 900, margin: '0 auto', padding: '32px 24px 64px' }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>logs</h1>
         <LogsPanel />
       </div>
-    </div>
+    </>
   )
 }
