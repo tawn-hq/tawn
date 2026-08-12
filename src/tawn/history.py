@@ -11,11 +11,61 @@ from pathlib import Path
 from uuid import uuid4
 
 
+#: A history line is one chat turn. Anything past this is not a turn — it is a
+#: binary blob that reached the log through some other defect — and attempting to
+#: parse a multi-megabyte line just to fail costs real time on a page load.
+MAX_LINE_BYTES = 1_000_000
+
+
 def _history_dir(home: Path) -> Path:
     d = home / "history"
     d.mkdir(parents=True, exist_ok=True)
     d.chmod(0o700)
     return d
+
+
+def read_entries(path: Path) -> tuple[list[dict], int]:
+    """Parse a session file, returning `(entries, skipped)`.
+
+    One unreadable line must not cost the whole file, and one unreadable file
+    must not cost the whole history index — a corrupt log is a reason to show
+    less, never a reason to show nothing. Observed in practice: an attachment bug
+    wrote hundreds of kilobytes of binary into a session file, and every history
+    request then failed with a `JSONDecodeError`.
+
+    `skipped` is returned rather than swallowed so callers can say what was lost.
+    Quietly dropping lines would hide data loss, which is the failure this
+    project cares most about avoiding.
+    """
+    if not path.exists():
+        return [], 0
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], 0
+    entries: list[dict] = []
+    skipped = 0
+    # `split("\n")` rather than `splitlines()`: the latter also breaks on \x0b,
+    # \x1c-\x1e, \x85 and U+2028/9, so a single binary blob fragments into several
+    # bogus "records" and inflates the skipped count. JSONL is newline-delimited,
+    # and a valid line cannot contain a raw control character — JSON escapes them.
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if len(line) > MAX_LINE_BYTES:
+            skipped += 1
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            skipped += 1
+            continue
+        if isinstance(obj, dict):
+            entries.append(obj)
+        else:
+            skipped += 1
+    return entries, skipped
 
 
 class Session:
@@ -44,37 +94,40 @@ class Session:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def entries(self) -> list[dict]:
-        if not self._path.exists():
-            return []
-        return [json.loads(line) for line in self._path.read_text().splitlines() if line]
+        return read_entries(self._path)[0]
 
 
 def list_sessions(home: Path) -> list[dict]:
-    """Return metadata for all sessions, newest first."""
+    """Return metadata for all sessions, newest first.
+
+    A session whose every line is unreadable is still listed, flagged rather than
+    hidden: silently omitting it would make lost history look like history that
+    never existed.
+    """
     d = _history_dir(home)
     sessions = []
     for p in sorted(d.glob("*.jsonl"), reverse=True):
-        lines = [l for l in p.read_text().splitlines() if l]
-        if not lines:
+        entries, skipped = read_entries(p)
+        if not entries and not skipped:
             continue
-        first = json.loads(lines[0])
-        last = json.loads(lines[-1])
-        # derive title from first user message
-        user_lines = [l for l in lines if json.loads(l).get("role") == "user"]
-        title = json.loads(user_lines[0])["content"][:60].strip() if user_lines else p.stem
+        user_entries = [e for e in entries if e.get("role") == "user"]
+        if user_entries:
+            title = str(user_entries[0].get("content", ""))[:60].strip() or p.stem
+        else:
+            title = p.stem
+        first = entries[0] if entries else {}
+        last = entries[-1] if entries else {}
         sessions.append({
             "id": p.stem,
-            "title": title,
+            "title": title if entries else f"{p.stem} — unreadable",
             "started": first.get("ts", ""),
             "last": last.get("ts", ""),
-            "turns": len(user_lines),
+            "turns": len(user_entries),
             "model": last.get("model", ""),
+            "corrupt_lines": skipped,
         })
     return sessions
 
 
 def get_session(home: Path, session_id: str) -> list[dict]:
-    p = _history_dir(home) / f"{session_id}.jsonl"
-    if not p.exists():
-        return []
-    return [json.loads(line) for line in p.read_text().splitlines() if line]
+    return read_entries(_history_dir(home) / f"{session_id}.jsonl")[0]

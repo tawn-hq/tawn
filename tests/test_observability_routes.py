@@ -112,3 +112,36 @@ def test_legacy_audit_routes_still_work(client, tawn_home):
 
     AuditLog(audit_path(tawn_home)).record("init", "/x", ok=True, actor="cli")
     assert client.get("/api/audit").json()["total"] == 1
+
+
+def test_spend_is_serialized_as_decimal_strings_not_floats(client, db_engine):
+    """`cost_usd` is `Numeric(18, 8)` and its column comment says why: money summed
+    through binary floating point drifts. This route used to convert to float and
+    then accumulate — the same spend path where reconciliation once found $12.21
+    of real spend recorded as $0.0021."""
+    import datetime
+    from decimal import Decimal
+
+    from sqlalchemy.orm import Session as SASession
+
+    from tawn.memory.schema import ModelCallRollup
+
+    # Three values that cannot be summed exactly in binary floating point.
+    with SASession(db_engine) as s:
+        for cost in ("0.10", "0.20", "0.30"):
+            s.add(ModelCallRollup(
+                day=datetime.date(2026, 8, 3), operation="ask", provider="p",
+                caller="cli", model="m", calls=1, tokens_in=1, tokens_out=1,
+                cost_usd=Decimal(cost), unpriced_calls=0,
+            ))
+        s.commit()
+
+    body = client.get("/api/observability/spend").json()
+
+    assert isinstance(body["total_cost_usd"], str), "money must not cross as a float"
+    assert body["total_cost_usd"] == "0.6", f"got {body['total_cost_usd']}"
+    for group in ("by_operation", "by_provider", "by_caller"):
+        for row in body[group]:
+            assert isinstance(row["cost_usd"], str), f"{group} leaked a float"
+    for row in body["by_day"]:
+        assert isinstance(row["cost_usd"], str)

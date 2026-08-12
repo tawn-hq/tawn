@@ -9,6 +9,7 @@ worth testing is reachable without touching a real filesystem watcher.
 from __future__ import annotations
 
 import datetime
+import logging
 import queue
 import threading
 from pathlib import Path
@@ -18,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from tawn.capability.grants import Grants
 from tawn.ignore import load_ignore_patterns, should_ignore
+
 from tawn.observer.attribution import (
     RecentWrite,
     agent_sessions_touched,
@@ -33,6 +35,20 @@ from tawn.observer.sessions import (
     record_event,
 )
 
+_log = logging.getLogger(__name__)
+
+#: Directories whose events are dropped before any per-event work happens.
+#: Measured caveat: this does **not** speed up arming — watchfiles' Rust layer
+#: walks the tree recursively regardless, so ~14k directories still cost ~15s to
+#: establish (15.8s unfiltered vs 14.9s filtered). What it buys is skipping the
+#: ignore-rule lookup and stat() for the constant churn under .git and .venv.
+WATCH_EXCLUDE_DIRS = frozenset({
+    ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+    "dist", "build", ".next", ".cache", ".idea", "site-packages",
+    ".ipynb_checkpoints", ".terraform", "target",
+})
+
 #: How many recent writes the timing heuristic looks back over. Bounded because
 #: the list is scanned per event and only the last few seconds ever matter.
 _RECENT_CAP = 64
@@ -44,12 +60,28 @@ class ObserverWatcher:
         home: Path,
         session_factory: Callable[[], Session],
         event_queue: "queue.Queue | None" = None,
+        on_armed: Callable[[], None] | None = None,
+        on_swept: Callable[[str], None] | None = None,
+        sweep_on_arm: bool = True,
     ):
         self.home = Path(home)
         self._session_factory = session_factory
         self._queue = event_queue
+        self.on_armed = on_armed
+        self.on_swept = on_swept
+        self.sweep_on_arm = sweep_on_arm
         self._stop_event = threading.Event()
         self._recent: list[RecentWrite] = []
+        #: Surfaced by `tawn observe status`, so a watcher that is running but
+        #: failing is distinguishable from one with nothing to do.
+        self.handle_errors = 0
+        self.last_error: str | None = None
+        self.armed = False
+        #: Outcome of the arm-time sweep, surfaced for the same reason as
+        #: `handle_errors`: a reconciliation that silently failed leaves a watcher
+        #: that looks complete and is not.
+        self.sweep_summary: str | None = None
+        self.sweep_error: str | None = None
         self.reload()
 
     # ── configuration ────────────────────────────────────────────────────
@@ -169,10 +201,14 @@ class ObserverWatcher:
     def _safe_handle(self, raw: str) -> None:
         try:
             self.handle(Path(raw), "modified")
-        except Exception:
-            # One bad path must not end the watch. The alternative is a silent
-            # observer that still looks healthy.
-            pass
+        except Exception as exc:
+            # One bad path must not end the watch — but it must not be invisible
+            # either. Swallowing this cost real debugging time once: `handle()`
+            # failing left an observer that printed "watching", recorded nothing,
+            # and looked perfectly healthy. Count and surface instead.
+            self.handle_errors += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            _log.warning("observer could not record %s: %s", raw, self.last_error)
 
     def _run_from_queue(self) -> None:
         while not self._stop_event.is_set():
@@ -185,13 +221,85 @@ class ObserverWatcher:
                 break
             self._safe_handle(item)
 
+    def _sweep_now(self) -> None:
+        """Reconcile against git and the filesystem snapshot.
+
+        Runs once, just after the watch is established, because that is exactly
+        the gap it exists to close: the ~15s of recursive-watch setup, plus
+        however long the daemon was stopped before this run.
+
+        Non-fatal by design. A reconciliation that cannot run must leave a working
+        watcher behind, so the failure is recorded and surfaced rather than raised.
+        """
+        from tawn.observer.sweep import sweep
+
+        try:
+            session = self._session_factory()
+            results = sweep(session, self.home)
+            added = sum(r.events_added for r in results)
+            updated = sum(r.events_updated for r in results)
+            self.sweep_summary = (
+                f"reconciled {len(results)} project(s): "
+                f"+{added} event(s), {updated} corrected"
+            )
+            _log.info("observer %s", self.sweep_summary)
+        except Exception as exc:
+            self.sweep_error = f"{type(exc).__name__}: {exc}"
+            self.sweep_summary = f"reconciliation failed — {self.sweep_error}"
+            _log.warning("observer sweep failed: %s", self.sweep_error)
+        if self.on_swept:
+            try:
+                self.on_swept(self.sweep_summary or "")
+            except Exception:
+                pass
+
+    def _start_arm_sweep(self) -> None:
+        """Sweep off the watch loop.
+
+        Measured at several seconds across four projects. Running it inline would
+        stall event consumption immediately after arming — reopening a smaller
+        version of the window the sweep is meant to close.
+        """
+        if not self.sweep_on_arm:
+            return
+        threading.Thread(
+            target=self._sweep_now, name="tawn-observer-sweep", daemon=True
+        ).start()
+
+    def _watch_filter(self, _change, path: str) -> bool:
+        """Whether watchfiles should report this path at all.
+
+        A coarse pre-filter, not a replacement for the user's ignore rules —
+        `should_ignore` still runs per event in `handle()`. This only avoids doing
+        that lookup for the constant churn under `.git`, `.venv` and friends.
+        """
+        parts = set(Path(path).parts)
+        return not (parts & WATCH_EXCLUDE_DIRS)
+
     def _run_watchfiles(self) -> None:
         from watchfiles import watch
 
         roots = [str(p.root) for p in self.projects]
         if not roots:
             return
-        for changes in watch(*roots, stop_event=self._stop_event, rust_timeout=5000):
+        # `yield_on_timeout` is what makes readiness observable: without it the
+        # generator only yields on a real change, so there is no way to tell an
+        # armed-but-quiet watcher from one still walking the tree. Establishing the
+        # recursive watch takes ~15s over a few thousand directories, and
+        # announcing readiness before then is what made early edits appear lost.
+        it = watch(
+            *roots,
+            stop_event=self._stop_event,
+            rust_timeout=1000,
+            yield_on_timeout=True,
+            watch_filter=self._watch_filter,
+        )
+        for changes in it:
+            if not self.armed:
+                self.armed = True
+                if self.on_armed:
+                    self.on_armed()
+                self._start_arm_sweep()
             for _change, raw in changes:
                 self._safe_handle(raw)
             self.tick()

@@ -73,3 +73,48 @@ def test_set_key_silent_store_failure_raises(monkeypatch):
 def test_key_status_never_contains_value(monkeypatch):
     monkeypatch.setattr(keys_mod.keyring, "get_password", lambda svc, user: "sk-SECRET")
     assert "sk-SECRET" not in key_status("gemini")
+
+
+def test_delete_removes_from_keyring(monkeypatch):
+    import tawn.model.keys as k
+
+    store = {("tawn", "openai"): "sk-x"}
+    monkeypatch.setattr(k.keyring, "get_password", lambda s, p: store.get((s, p)))
+    monkeypatch.setattr(k.keyring, "delete_password", lambda s, p: store.pop((s, p)))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    removed, env_var = k.delete_key("openai")
+    assert removed is True
+    assert env_var is None
+    assert k.get_key("openai") is None
+
+
+def test_delete_reports_a_key_still_live_in_the_environment(monkeypatch):
+    """A process cannot unset a parent shell's variable, so saying "removed"
+    without naming the survivor would be a lie the user finds out later."""
+    import tawn.model.keys as k
+
+    monkeypatch.setattr(k.keyring, "get_password", lambda s, p: None)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+
+    removed, env_var = k.delete_key("openai")
+    assert removed is False
+    assert env_var == "OPENAI_API_KEY"
+    assert k.get_key("openai") == "sk-env"   # still live, honestly reported
+
+
+def test_delete_never_leaks_the_value_in_an_error(monkeypatch):
+    import tawn.model.keys as k
+
+    monkeypatch.setattr(k.keyring, "get_password", lambda s, p: "sk-SECRET123")
+
+    def _boom(*a, **kw):
+        raise RuntimeError("backend locked")
+
+    monkeypatch.setattr(k.keyring, "delete_password", _boom)
+    try:
+        k.delete_key("openai")
+    except k.KeyStorageError as e:
+        assert "sk-SECRET123" not in str(e)
+    else:
+        raise AssertionError("expected KeyStorageError")

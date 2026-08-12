@@ -98,3 +98,25 @@ def keys_post(provider: str, body: KeyBody):
     except KeyStorageError as e:
         return {"ok": False, "detail": str(e)}
     return {"ok": True}
+
+
+@router.delete("/keys/{provider}")
+def keys_delete(provider: str):
+    """Remove a provider key from the OS keyring.
+
+    `env_var` is returned when the key survives in the environment — the server
+    cannot unset a variable in the shell that launched it, so the caller has to
+    be told the key is still live rather than shown a success message.
+    """
+    from tawn.model.keys import delete_key
+
+    try:
+        removed, env_var = delete_key(provider)
+    except KeyStorageError as e:
+        return {"ok": False, "detail": str(e)}
+    return {
+        "ok": True,
+        "removed": removed,
+        "env_var": env_var,
+        "status": key_status(provider),
+    }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Logo, ThemeToggle } from '../ds'
+import { NAV_ICONS, type NavIconName } from './NavIcons'
 
 /**
  * The application frame: a grouped sidebar, a slim header, and a content well.
@@ -15,6 +16,7 @@ interface NavItem {
   label: string
   to: string
   hint: string
+  icon: NavIconName
 }
 
 interface NavGroup {
@@ -26,30 +28,31 @@ export const NAV: NavGroup[] = [
   {
     title: 'your twin',
     items: [
-      { label: 'dashboard', to: '/dashboard', hint: 'today at a glance' },
-      { label: 'chat', to: '/chat', hint: 'ask, with your memory in context' },
+      { label: 'dashboard', to: '/dashboard', hint: 'today at a glance', icon: 'dashboard' },
+      { label: 'chat', to: '/chat', hint: 'ask, with your memory in context', icon: 'chat' },
     ],
   },
   {
     title: 'knowledge',
     items: [
-      { label: 'memory', to: '/memory', hint: 'everything it has read' },
-      { label: 'notes', to: '/notes', hint: 'what you told it directly' },
-      { label: 'wiki', to: '/wiki', hint: 'what it worked out' },
+      { label: 'memory', to: '/memory', hint: 'everything it has read', icon: 'memory' },
+      { label: 'notes', to: '/notes', hint: 'what you told it directly', icon: 'notes' },
+      { label: 'wiki', to: '/wiki', hint: 'what it worked out', icon: 'wiki' },
     ],
   },
   {
     title: 'capability',
     items: [
-      { label: 'tools', to: '/tools', hint: 'servers, skills, generated tools' },
-      { label: 'agents', to: '/agents', hint: 'the tools that feed it' },
+      { label: 'tools', to: '/tools', hint: 'servers, skills, generated tools', icon: 'tools' },
+      { label: 'agents', to: '/agents', hint: 'the tools that feed it', icon: 'agents' },
+      { label: 'observer', to: '/observer', hint: 'who changed what, and review notes', icon: 'observer' },
     ],
   },
   {
     title: 'system',
     items: [
-      { label: 'activity', to: '/observability', hint: 'what it did, and the cost' },
-      { label: 'settings', to: '/settings', hint: 'grants, models, database' },
+      { label: 'activity', to: '/observability', hint: 'what it did, and the cost', icon: 'activity' },
+      { label: 'settings', to: '/settings', hint: 'grants, models, database', icon: 'settings' },
     ],
   },
 ]
@@ -137,7 +140,8 @@ function NavRow({ item, collapsed, onGo }: { item: NavItem; collapsed: boolean; 
           background: active ? 'var(--tawn-lapis)' : 'transparent',
         }}
       />
-      {collapsed ? item.label.slice(0, 2) : item.label}
+      {NAV_ICONS[item.icon]}
+      {!collapsed && item.label}
     </a>
   )
 }

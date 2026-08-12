@@ -21,7 +21,13 @@ UNKNOWN = "unknown"
 
 #: Bound the walk over a federation source dir — these hold thousands of files
 #: and correlation only needs to know whether *any* of them moved recently.
-_SCAN_LIMIT = 500
+#:
+#: Raised from 500 after measuring: `~/.gemini/tmp` holds 2,812 entries, so the
+#: old cap examined 18% of them and silently missed that agent whenever its
+#: transcripts sorted late. This tier is now a fallback behind
+#: `transcripts.build_index`, but a fallback that quietly skips an agent is worse
+#: than one that is merely weak.
+_SCAN_LIMIT = 20_000
 
 
 @dataclass(frozen=True)

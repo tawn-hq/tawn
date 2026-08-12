@@ -636,6 +636,47 @@ def key_show(provider: str) -> None:
     typer.echo(f"{provider}: {key_status(provider)}")
 
 
+@key_app.command("delete")
+def key_delete(
+    provider: str,
+    yes: bool = typer.Option(False, "--yes", "-y", help="skip the confirmation"),
+) -> None:
+    """Remove a provider key from the OS keyring.
+
+    Confirms first: the key is not recoverable from here afterwards, and losing
+    it silently drops that provider out of the routing chain.
+    """
+    from tawn.model.keys import KeyStorageError, delete_key, key_status
+
+    status = key_status(provider)
+    if status == "not set":
+        typer.echo(f"{provider}: not set — nothing to remove")
+        return
+    if not yes and not typer.confirm(
+        f"remove the {provider} key ({status})? it cannot be recovered from here"
+    ):
+        typer.echo("cancelled")
+        raise typer.Exit(1)
+
+    try:
+        removed, env_var = delete_key(provider)
+    except KeyStorageError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+    if removed:
+        typer.echo(f"{provider}: removed from OS keyring")
+    else:
+        typer.echo(f"{provider}: nothing stored in the OS keyring")
+    if env_var:
+        # get_key() still returns a value, so claiming the key is gone would be a
+        # lie the user only discovers when the provider keeps answering.
+        typer.echo(
+            f"still set from the environment — run `unset {env_var}` in your "
+            "shell, and remove it from your shell profile to make that persist"
+        )
+
+
 @app.command()
 def ask(
     prompt: str,
@@ -2697,9 +2738,22 @@ def cmd_update(
 
 @app.command("observe")
 def cmd_observe(
-    action: str = typer.Argument("status", help="status | projects | start | stop | review"),
+    action: str = typer.Argument(
+        "status", help="status | projects | start | stop | review | sweep | note"
+    ),
     project: str = typer.Argument(None, help="Project name, for `review`"),
-    cloud: bool = typer.Option(False, "--cloud", help="Allow a cloud model for review notes"),
+    cloud: bool = typer.Option(
+        False, "--cloud",
+        help="Allow a cloud model for review notes — SENDS FILE PATHS OFF THIS MACHINE",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="sweep only: report without writing"
+    ),
+    model: str = typer.Option(
+        None, "--model",
+        help="Model for the review note, e.g. anthropic/claude-haiku-4-5 or "
+             "ollama/qwen3:4b. Overrides --cloud and the configured default.",
+    ),
 ) -> None:
     """Ambient Observer — what you and your agents worked on.
 
@@ -2708,6 +2762,11 @@ def cmd_observe(
       tawn observe projects            what it is watching
       tawn observe start               run the watcher in the foreground
       tawn observe review [project]    close the session and write the note now
+      tawn observe review --cloud      use a cloud model for the analysis
+      tawn observe review --model X    pick the model explicitly
+      tawn observe sweep [project]     reconcile the record against git + disk
+      tawn observe sweep --dry-run     say what it would record, write nothing
+      tawn observe note [project]      print the most recent review note
 
     Dispatch is manual rather than a Typer sub-app, for the same reason as
     `tawn wiki`: a sub-app callback with a positional argument swallows its own
@@ -2721,7 +2780,7 @@ def cmd_observe(
     from tawn.db import session as db_session
     from tawn.memory.schema import ObserverSession
     from tawn.observer.projects import discover_projects, tier_enabled
-    from tawn.observer.review import process_pending
+    from tawn.observer.review import process_pending, reconcile_first
     from tawn.observer.sessions import close_session, current_session
 
     home = tawn_home()
@@ -2764,6 +2823,53 @@ def cmd_observe(
             typer.echo("sessions: unavailable — run `tawn db setup`")
         return
 
+    if action == "note":
+        from pathlib import Path as _Path
+
+        engine = make_engine()
+        with db_session(engine) as s:
+            q = s.query(ObserverSession).filter(ObserverSession.note_path.isnot(None))
+            if project:
+                q = q.filter(ObserverSession.project == project)
+            sess = q.order_by(ObserverSession.id.desc()).first()
+            if sess is None:
+                typer.echo(
+                    "no note written yet — run `tawn observe review`"
+                    + (f" {project}" if project else "")
+                )
+                return
+            path = _Path(sess.note_path)
+            if not path.exists():
+                typer.echo(f"note recorded at {path}, but the file is gone")
+                raise typer.Exit(1)
+            typer.echo(path.read_text(encoding="utf-8", errors="replace"))
+        return
+
+    if action == "sweep":
+        from tawn.observer.sweep import sweep
+
+        engine = make_engine()
+        with db_session(engine) as s:
+            results = sweep(s, home, project, dry_run=dry_run)
+        if not results:
+            typer.echo("no watched projects — grant read: access to a directory first")
+            return
+        for r in results:
+            bits = []
+            if r.commits_read:
+                bits.append(f"{r.commits_read} commit(s)")
+            if r.events_added:
+                bits.append(f"+{r.events_added} event(s)")
+            if r.events_updated:
+                bits.append(f"{r.events_updated} corrected")
+            if r.skipped_existing:
+                bits.append(f"{r.skipped_existing} already recorded")
+            summary = ", ".join(bits) or "nothing to reconcile"
+            suffix = f" — {r.reason}" if r.reason else ""
+            prefix = "would record: " if r.dry_run else ""
+            typer.echo(f"{r.project:<24} {prefix}{summary}{suffix}")
+        return
+
     if action == "review":
         now = datetime.datetime.now(datetime.timezone.utc)
         engine = make_engine()
@@ -2773,7 +2879,8 @@ def cmd_observe(
                 sess = current_session(s, name)
                 if sess is not None:
                     close_session(s, sess, now, "manual")
-            n = process_pending(s, home, cloud)
+            reconcile_first(s, home, project)
+            n = process_pending(s, home, cloud, model)
         typer.echo(f"{n} note(s) written")
         return
 
@@ -2784,8 +2891,18 @@ def cmd_observe(
         from tawn.observer.watch import ObserverWatcher
 
         engine = make_engine()
-        typer.echo("watching — ctrl-c to stop")
-        watcher = ObserverWatcher(home, lambda: Session(engine))
+        # Announce readiness only once the recursive watch exists. Printing it
+        # up front made edits in the first ~25s vanish with no error, which reads
+        # as "the observer does not work" rather than "it is not ready yet".
+        typer.echo("arming watch across granted projects…")
+        watcher = ObserverWatcher(
+            home,
+            lambda: Session(engine),
+            on_armed=lambda: typer.echo("watching — ctrl-c to stop"),
+            # Reported when it finishes rather than awaited: the sweep runs off
+            # the watch loop so event consumption is not stalled behind it.
+            on_swept=lambda summary: typer.echo(summary),
+        )
         try:
             watcher.run()
         except KeyboardInterrupt:

@@ -1,0 +1,14 @@
+# Rules live in the org repo so every tawn-hq repo is held to the same ones:
+# https://github.com/tawn-hq/.github/blob/main/scripts/pr_checks.py
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    uses: tawn-hq/.github/.github/workflows/pr-checks.yml@main
+    permissions:
+      contents: read
+      pull-requests: write

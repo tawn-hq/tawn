@@ -4,6 +4,8 @@
 
 Tawn is a self-hosted memory and context core that unifies your work, wealth, research, and academic life into one searchable brain — shared across every AI agent you use (Claude Code, Cursor, Gemini CLI, and others).
 
+**Why it exists.** Every assistant remembers you now — inside itself, on the vendor's servers, for as long as you keep paying. What you taught Claude is invisible to Cursor. None of those stores index the repositories and notes your work actually lives in, and none records what another agent just changed. That gap isn't an oversight someone will fix: memory is what makes a vendor's product sticky, so interoperability runs against their interest. Tawn is the shared substrate they have no reason to build — one memory, on your machine, that every tool can read.
+
 ```
 pip install tawn
 tawn init

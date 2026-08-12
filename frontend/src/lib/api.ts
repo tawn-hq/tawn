@@ -42,6 +42,11 @@ export const getKeyStatus = (provider: string): Promise<{ status: string }> =>
 export const postKey = (provider: string, key: string): Promise<{ ok: boolean }> =>
   _fetch(`/api/setup/keys/${provider}`, { method: 'POST', body: JSON.stringify({ key }) })
 
+export const deleteKey = (
+  provider: string,
+): Promise<{ ok: boolean; removed: boolean; env_var: string | null; status: string; detail?: string }> =>
+  _fetch(`/api/setup/keys/${provider}`, { method: 'DELETE' })
+
 export const getSetupHost = (): Promise<{ ok: boolean; hint: string }> =>
   _fetch('/api/setup/host')
 
@@ -517,20 +522,20 @@ export interface SpendGroup {
   provider?: string
   caller?: string
   calls: number
-  cost_usd: number
+  cost_usd: string   // Decimal as string — never parse for arithmetic
   unpriced: number
 }
 
 export interface SpendSummary {
   total_calls: number
-  total_cost_usd: number
+  total_cost_usd: string
   unpriced_calls: number
   total_tokens_in: number
   total_tokens_out: number
   by_operation: SpendGroup[]
   by_provider: SpendGroup[]
   by_caller: SpendGroup[]
-  by_day: { day: string; calls: number; cost_usd: number }[]
+  by_day: { day: string; calls: number; cost_usd: string }[]
 }
 
 export interface SpendStatus {
@@ -587,8 +592,67 @@ export const getObserverSessions = (limit = 20): Promise<{ sessions: ObserverSes
 export const getObserverEvents = (id: number): Promise<{ events: ObserverEvent[] }> =>
   _fetch(`/api/observer/sessions/${id}/events`)
 
-export const postObserverReview = (project?: string): Promise<{ closed: number; notes_written: number }> =>
-  _fetch(`/api/observer/review${project ? `?project=${encodeURIComponent(project)}` : ''}`, { method: 'POST' })
+export interface ObserverProject {
+  name: string
+  root: string
+  is_git: boolean
+}
+
+export const getObserverProjects = (): Promise<{ observe: string[]; projects: ObserverProject[] }> =>
+  _fetch('/api/observer/projects')
+
+export interface CloudModelRow {
+  target: string
+  provider: string
+  model: string
+  source: 'live' | 'cache' | 'fallback'
+}
+
+export const getReviewModels = (): Promise<{
+  local: string[]
+  cloud: string[]
+  cloud_detail: CloudModelRow[]
+  providers: string[]
+  default: string | null
+  cloud_available: boolean
+}> => _fetch('/api/observer/review-models')
+
+export const getObserverNote = (
+  id: number,
+): Promise<{ found: boolean; state?: string; path?: string; body?: string; reason?: string }> =>
+  _fetch(`/api/observer/sessions/${id}/note`)
+
+export interface SweepRow {
+  project: string
+  commits_read: number
+  events_added: number
+  events_updated: number
+  skipped_existing: number
+  reason: string
+}
+
+export const postObserverSweep = (
+  project?: string,
+  dryRun = false,
+): Promise<{ dry_run: boolean; results: SweepRow[] }> => {
+  const q = new URLSearchParams()
+  if (project) q.set('project', project)
+  if (dryRun) q.set('dry_run', 'true')
+  const qs = q.toString()
+  return _fetch(`/api/observer/sweep${qs ? `?${qs}` : ''}`, { method: 'POST' })
+}
+
+export const postObserverReview = (
+  project?: string,
+  opts?: { cloud?: boolean; model?: string },
+): Promise<{ closed: number; notes_written: number; model: string }> => {
+  const q = new URLSearchParams()
+  if (project) q.set('project', project)
+  if (opts?.cloud) q.set('cloud', 'true')
+  if (opts?.model) q.set('model', opts.model)
+  const qs = q.toString()
+  return _fetch(`/api/observer/review${qs ? `?${qs}` : ''}`, { method: 'POST' })
+}
 
 // ── Tools: MCP servers, skills, generated tools ──────────────────────────────
 

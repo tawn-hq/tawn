@@ -10,6 +10,7 @@ import datetime
 import os
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     Date,
@@ -290,6 +291,56 @@ class ObservedEvent(Base):
     confidence = Column(String(8), nullable=False, default="low", server_default="low")
     basis = Column(String(16), nullable=False, default="none", server_default="none")
     ts = Column(DateTime(timezone=True), nullable=False)
+
+
+class ObserverWatermark(Base):
+    """How far the git sweep has reconciled one project.
+
+    The watcher only knows what inotify told it while it was running, which
+    excludes the ~15s the recursive watch takes to arm, any period the daemon was
+    stopped, and events dropped under queue overflow. The sweep reconciles that
+    record against git, and this row is what keeps a second sweep cheap.
+
+    `last_commit` bounds commit reconciliation to `last_commit..HEAD`.
+    `tree_digest` is a hash over the sorted dirty-set `(path, size, mtime_ns)`, so
+    an unchanged working tree costs one comparison rather than one query per file.
+    """
+
+    __tablename__ = "observer_watermark"
+
+    project = Column(String(128), primary_key=True)
+    last_commit = Column(String(64), nullable=True)
+    tree_digest = Column(String(64), nullable=True)
+    swept_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class FileSnapshot(Base):
+    """Last-known state of one file, for change detection without git.
+
+    The same trick an editor or a backup tool uses: `(size, mtime_ns)` is a cheap
+    gate, and only when that differs is the content hashed to confirm a real
+    change. That distinction matters — a `touch`, a checkout of identical content,
+    or a formatter that rewrites the same bytes all move mtime without changing
+    anything, and recording those as edits would fill the log with noise.
+
+    `digest` is of content; `lines` lets a net line delta be reported without
+    keeping a copy of the file, which `ObservedEvent` deliberately never does.
+
+    Distinct from `FileState`, which serves the compiler: that one is keyed on
+    path alone and tracks what has been *ingested*, this one is keyed per project
+    and tracks what has been *observed*. Sharing a table would couple the
+    observer's change detection to compile scheduling.
+    """
+
+    __tablename__ = "file_snapshots"
+
+    project = Column(String(128), primary_key=True)
+    path = Column(Text, primary_key=True)
+    size = Column(Integer, nullable=False, default=0)
+    mtime_ns = Column(BigInteger, nullable=False, default=0)
+    digest = Column(String(64), nullable=True)
+    lines = Column(Integer, nullable=False, default=0)
+    seen_at = Column(DateTime(timezone=True), nullable=False)
 
 
 class LedgerWatermark(Base):

@@ -1,3 +1,9 @@
+# Pipeline logic lives in the org repo so it is defined once:
+# https://github.com/tawn-hq/.github/blob/main/.github/workflows/python-publish.yml
+#
+# This file's name and the `pypi` environment are both part of what PyPI's
+# trusted publisher matches on. Renaming either breaks publishing until the
+# trusted publisher config on PyPI is updated to match.
 name: Publish to PyPI
 
 on:
@@ -5,52 +11,14 @@ on:
     tags:
       - "v*.*.*"
 
-permissions:
-  contents: read
-  id-token: write  # for OIDC trusted publishing
-
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install build deps
-        run: pip install build
-
-      - name: Build frontend
-        run: |
-          cd frontend
-          npm ci
-          npm run build
-          # Bundle built assets into the package
-          cp -r dist/. ../src/tawn/web/dist/
-
-      - name: Build wheel + sdist
-        run: python -m build
-
-      - name: Upload dist artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
   publish:
-    needs: build
-    runs-on: ubuntu-latest
-    environment: pypi
-    steps:
-      - name: Download dist artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI (trusted publishing)
-        uses: pypa/gh-action-pypi-publish@release/v1
+    uses: tawn-hq/.github/.github/workflows/python-publish.yml@main
+    with:
+      python-version: "3.12"
+      build-frontend: true
+      frontend-dist-target: src/tawn/web/dist
+      environment: pypi
+    permissions:
+      contents: read
+      id-token: write  # OIDC trusted publishing
