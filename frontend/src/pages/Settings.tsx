@@ -13,7 +13,7 @@ function useIsMobile() {
   }, [])
   return m
 }
-import { getGrants, putGrants, getProfile, putProfile, getDomains, getAllModels, enableDomain, disableDomain, getKeyStatus, postKey, getChunkStats, deleteChunks, postCompile, getAudit, verifyAudit, type Grants, type DomainRow, type ModelRow, type ChunkStats, type AuditPage } from '../lib/api'
+import { getGrants, putGrants, getProfile, putProfile, getDomains, getAllModels, enableDomain, disableDomain, getKeyStatus, postKey, deleteKey, getChunkStats, deleteChunks, postCompile, getAudit, verifyAudit, type Grants, type DomainRow, type ModelRow, type ChunkStats, type AuditPage } from '../lib/api'
 import { SetupWizard } from './Setup'
 import { LogsPanel } from './Logs'
 
@@ -429,6 +429,30 @@ function ModelsTab() {
     } finally { setBusy(false) }
   }
 
+  async function removeKey() {
+    // A key cannot be recovered from here, and losing it silently drops that
+    // provider out of the routing chain.
+    if (!window.confirm(`Remove the ${provider} key? It cannot be recovered from here.`)) return
+    setBusy(true)
+    setKeyMsg('')
+    try {
+      const r = await deleteKey(provider)
+      if (!r.ok) { setKeyMsg(`error: ${r.detail ?? 'could not remove the key'}`); return }
+      // Trust the server's own status rather than assuming 'not set' — an
+      // environment variable may still be supplying the key.
+      setKeyStates((st) => ({ ...st, [provider]: r.status }))
+      setKeyMsg(
+        r.env_var
+          ? `${provider} removed from the keyring, but still set from ${r.env_var} — run \`unset ${r.env_var}\``
+          : `${provider} key removed`,
+      )
+    } catch (e: unknown) {
+      setKeyMsg(`error: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function pullOllama() {
     const name = ollamaModel.trim()
     if (!name) return
@@ -503,6 +527,11 @@ function ModelsTab() {
           </select>
           <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" mono style={{ flex: 1, minWidth: 160 }} />
           <Button type="submit" disabled={busy || !apiKey.trim()}>store key</Button>
+          <Button
+            variant="danger"
+            disabled={busy || keyStates[provider] !== 'set'}
+            onClick={removeKey}
+          >remove key</Button>
         </form>
         {keyMsg && <div style={{ marginTop: 8, fontSize: 12, fontFamily: 'var(--tawn-font-mono)', color: keyMsg.startsWith('error') ? 'var(--tawn-crit)' : 'var(--tawn-good)' }}>{keyMsg}</div>}
       </Card>

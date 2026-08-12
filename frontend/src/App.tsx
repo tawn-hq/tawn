@@ -10,6 +10,7 @@ import Tools from './pages/Tools'
 import Shell from './components/Shell'
 import { ErrorProvider } from './components/Errors'
 import Agents from './pages/Agents'
+import Observer from './pages/Observer'
 import Settings from './pages/Settings'
 import Setup from './pages/Setup'
 import DomainCreate from './pages/DomainCreate'
@@ -32,6 +33,7 @@ export default function App() {
       <Route path="/wiki" element={<Wiki />} />
       <Route path="/tools" element={<Tools />} />
       <Route path="/agents" element={<Agents />} />
+      <Route path="/observer" element={<Observer />} />
       <Route path="/settings" element={<Settings />} />
       <Route path="/setup" element={<Setup />} />
       <Route path="/domain/create" element={<DomainCreate />} />

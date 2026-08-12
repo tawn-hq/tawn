@@ -4,6 +4,13 @@
 > decisions land. Detailed bite-sized plans are written **per stage at the
 > moment it goes active** — never earlier, so they build on what the previous
 > stage taught us. One stage = one plan file in this directory.
+>
+> **Scope:** this file tracks *what gets built* in this repository, stages 0–23.
+> Two companion documents live in the `tawn-hq` workspace, outside this repo:
+> `docs/OSS-ROADMAP.md` (the open-source journey — MIT boundary, adoption,
+> contributors, releases, community) and `docs/WEB3_ROADMAP.md` (a separate layered
+> package, one-way dependency on `tawn`, not on the path to 1.0).
+> A project can ship every stage here and still fail as open source.
 
 **Status legend:** ✅ shipped · 🔨 active · 📋 planned (plan written) · ⬜ not started
 
@@ -20,11 +27,56 @@
 | 8 | Observability: audit trail correctness, cost ledger with attribution, spend rollups, activity page | ✅ | `2026-07-25-stage8-observability.md` |
 | 9 | Ambient Observer (project-scoped) + review notes + authorship attribution | ✅ | `2026-07-26-stage9-ambient-observer.md` |
 | 10 | MCP Manager (client, adoption, capability-gated) + universal tool calling + standard toolset (files/net/shell/research/diagrams/parsing) + Skill Factory + skill import + generated-tool creator | ✅ | `2026-07-26-stage10-mcp-manager-and-skill-factory.md` |
-| 11 | Sharing + access control: owner/guest keys, allowlisted guest view (shared artifacts + comments), **public chat over an opt-in public corpus, no tools, owner-chosen model, per-key spend caps**, public persona, per-guest audit attribution, code-doc artifacts, vertical nav | ⬜ | — |
-| 12 | Orchestrator: router (retrieval-first + escalation) + handoff artifact | ⬜ | — |
-| 13 | Failure journal + auto-replay | ⬜ | — |
-| 14 | Deferred differentiators: contradiction sweep, time-travel, preference learning, personality proper | ⬜ | — |
-| 15 | Research/Work/Academic domain modules + Telegram surface | 🔨 | — (records-engine config for work/research/academic/hobby shipped unplanned during Stage 0–3 work; Telegram surface not started) |
+
+## Remaining work, in priority order
+
+**Stage numbers are stable identifiers, not an execution order.** They are
+referenced from the decision log below and from plan filenames, so they never
+change. `#` is the order to build in, and it is the column that gets reshuffled.
+
+| # | Stage | Ships | Status |
+|---|---|---|---|
+| **1** | 22 | **Encrypted backup + second device.** `BackupStore` interface, client-side encryption (user holds the key), local-directory and S3-compatible backends. Content-addressed backends may be added later, never as the only option | ⬜ |
+| **2** | 16 | **Policy engine extraction.** Split `PolicyEngine` (typed action → `Decision(allowed, reason, matched_rule)`) out of filesystem mediation; MediatedFS becomes one caller among several rather than the only gate | ⬜ |
+| **3** | 17 | **Registrable action types.** Plugins contribute action classes and `grants.yaml` schema blocks through the entry-point machinery the domain plugins already use; core stays unaware of any specific action domain | ⬜ |
+| **4** | 18 | **Domain principals.** Each domain carries its own authority envelope — grants, model allowlist, tool allowlist, spend ceiling, sensitivity policy — and its own segment of the evidence trail | ⬜ |
+| **5** | 19 | **Signed evidence bundles.** Per-action envelope: action, decision + reason, hash of inputs (never contents), actor + attribution confidence, audit chain head, signature | ⬜ |
+| **6** | 20 | **Policy over MCP.** `may_i(action)` and `evidence(id)` so any agent — Claude Code, Cursor, anything speaking MCP — can ask permission and get an answer that lands in the audit trail | ⬜ |
+| **7** | 21 | **`AnchorTarget` port + OpenTimestamps.** Publish one chain head per interval so log integrity is checkable by someone other than its owner. No wallet, no chain integration; other anchors become adapters behind the same port | ⬜ |
+| **8** | 23 | **Key recovery and inheritance.** Threshold secret sharing / social recovery for the backup key (k-of-n guardians or devices) plus a dead-man's-switch path | ⬜ |
+| **9** | 11 | Sharing + access control: owner/guest keys, allowlisted guest view (shared artifacts + comments), **public chat over an opt-in public corpus, no tools, owner-chosen model, per-key spend caps**, public persona, per-guest audit attribution, code-doc artifacts, vertical nav | ⬜ |
+| **10** | 15 | Telegram surface (the domain-module half already shipped unplanned during Stage 0–3 work via records-engine config for work/research/academic/hobby) | 🔨 |
+| **11** | 12 | Orchestrator: router (retrieval-first + escalation) + handoff artifact | ⬜ |
+| **12** | 13 | Failure journal + auto-replay | ⬜ |
+| **13** | 14 | Deferred differentiators: contradiction sweep, time-travel, preference learning, personality proper | ⬜ |
+
+### Why this order
+
+Four tiers, in descending urgency:
+
+**Tier 1 — irreversible risk (#1–2).** Stage 22 is first because it is the only
+item where delay risks **permanent loss**. ~12,300 chunks and 11,988 entities live
+in one Postgres on one machine with no backup; the enrichment pass alone took ~44
+hours. Every other item on this list can wait a month without anything being
+destroyed. Stage 16 is second because it fixes a defect that already exists — the
+MediatedFS coverage gap (REVIEW-2026-07-27, `135:6`) — and unblocks #3–#6.
+
+**Tier 2 — the authority spine (#3–6).** 17 → 18 → 19 → 20, each depending on the
+one before. #6 is the leverage peak: `may_i` and `evidence` over MCP turn Tawn from
+a memory server into the policy sidecar any agent can consult.
+
+**Tier 3 — make sharing safe, then share (#7–9).** Stage 11 **moved from first to
+ninth**, which is the largest change here. Sharing is the biggest risk surface in
+the whole roadmap — it puts Tawn on the internet — and it gets materially better
+after the authority layer: per-key spend caps become a use of registrable action
+types instead of a bespoke implementation, per-guest attribution rides on evidence
+bundles, and anchoring (#7) turns the audit trail a guest is asked to trust into
+something they can verify. Building 11 first would mean writing all three of those
+mechanisms twice.
+
+**Tier 4 — value after the foundation (#10–13).** Telegram is a thin surface. The
+orchestrator and failure journal are quality-of-life over a core that works. Stage
+14 stays last because it is data-gated regardless of priority.
 
 ## Stage dependency notes (why this order holds)
 
@@ -37,16 +89,50 @@
 - **7 after 4–6:** wiki surface reads what the core produces.
 - **8 anytime after 4** (needs `note` write-back); placed after 7 so review
   notes land somewhere visible.
-- **11 after 10:** sharing exposes Tawn to the internet, so it must come after
-  the tool surface it would expose is finished and testable.
+- **11 after 10** *(original reasoning, still true)*: sharing exposes Tawn to the
+  internet, so it must come after the tool surface it would expose is finished and
+  testable. **Superseded on ordering** — see the priority table: 11 now also waits
+  on the authority layer, because its spend caps, guest attribution and audit
+  trust all get built once instead of twice.
 - **14 is data-gated:** needs months of accept/reject + graph density; capture
   signal from Stage 8, build the compilers here.
-- **15 last:** domain modules reuse everything; Telegram is a thin surface.
+- **15's domain half is done**; only the Telegram surface remains, and a thin
+  surface earns no priority over foundations.
+- **16–23 are the authority layer**, the chapter that takes Tawn from a memory layer
+  to an authority layer. Every one of them is useful with no blockchain present —
+  that is the test each had to pass to be in this file rather than the separate web3
+  layer.
+- **16 stands on its own merit.** Policy evaluation is currently entangled with
+  filesystem mediation, which is why the MediatedFS coverage gap exists
+  (REVIEW-2026-07-27, `135:6`). Extracting it is a refactor worth doing even if
+  nothing downstream were ever built.
+- **16 before 17 before 19 before 20** — that chain is the spine. 18 can land
+  alongside 17, since a domain envelope is a grant scope and needs the registrable
+  schema first.
+- **20 is where the leverage is.** Exposing `may_i` and `evidence` turns Tawn from a
+  memory server into the policy sidecar any agent can consult — a larger strategic
+  surface than the rest of 16–23 combined.
+- **21 is cheap and independent.** One hash per interval. It can ship any time after
+  16, but it only becomes load-bearing at Stage 11: sharing hands a guest a view
+  backed by an audit trail they must otherwise trust completely, and anchoring is
+  what turns that trail from assertion into evidence.
+- **22 is now first overall.** Everything compiled lives in one Postgres on one
+  machine with no backup and no second device, so "the memory you own" currently
+  dies with the laptop. It is a correctness gap in the product thesis, it depends on
+  no other stage, and it is the only item on the list where waiting risks losing
+  work that cannot be recreated.
+- **23 needs 22.** There is no key to recover until there is a backup key. It closes
+  the worst failure mode of client-side encryption: a forgotten passphrase
+  destroying the corpus permanently.
 
 ## Decision log (append-only; newest first)
 
 | Date | Decision | Where it bites |
 |---|---|---|
+| 2026-07-29 | **The authority layer stays MIT. What gets sold is operator burden, not trust primitives.** Considered and rejected: moving stages 16–23 into a private repo as a paid tier. The decisive argument is technical, not ideological — **the authority layer is not severable.** It *is* the capability spine: grants, MediatedFS and the audit chain shipped under MIT in Stage 0 and are already on PyPI, so Stage 16 is a refactor of already-released MIT code. Closing "authority" would mean running a licence boundary through the middle of `capability/` and triaging every future change to `grants.py` as open-or-closed, permanently, in the highest-traffic subsystem. Three supporting reasons: a proprietary policy engine and audit log make Tawn's deny-all and injection-resistance claims unverifiable, and for a sovereignty product an unauditable auditor is worse than no claim; it disqualifies the strongest funding fits (FUTO, Mozilla, OTF, GitHub SOSF all weigh openness); and `may_i` over MCP only has value if it is ubiquitous — a permission oracle other vendors must license gets reimplemented or ignored, which is why MCP itself was donated to the Linux Foundation. The commercial line therefore sits at *who carries the cost of running policy at scale*, not at whether policy exists: single-user policy, evidence, audit and local anchoring are free forever; hosted backup/sync, team deployment with central administration and SSO, and hosted attestation with auditor export are paid. Full free/paid split in `tawn-hq/docs/OSS-ROADMAP.md` under "The promise". BUSL-1.1 with a delayed MIT conversion was also rejected for this layer — not OSI-approved, so the same funders still exclude it — though it remains open for the team/org features, where no trust claim depends on it. | Stages 16–23; the MIT boundary |
+| 2026-07-29 | **Remaining work is ordered by priority in its own table; stage numbers are frozen identifiers.** Renumbering was rejected: stage numbers are referenced from eight rows of this decision log and encoded in plan filenames, so reordering by renumbering would invalidate the project's own history. Priority is a separate, mutable column. The substantive changes: **Stage 22 (backup) moves to first** — it is the only item where delay risks permanent, unrecreatable loss of ~12,300 chunks and 11,988 entities sitting in a single un-backed-up Postgres — and **Stage 11 (sharing) moves from first to ninth**, because its per-key spend caps, per-guest attribution and audit-trust story each get built once on top of the authority layer instead of twice. | Ordering of 11–23 |
+| 2026-07-29 | **The authority layer is open source, and stays in this repo.** Stages 16–23 generalise what the capability spine already does for files to every action class, and expose it as a decision other agents can ask for. The test each had to pass: *is this useful with no blockchain present?* Policy extraction fixes an existing coupling defect; evidence bundles are what Stage 11 sharing needs to hand a guest something better than blind trust; `may_i` serves any MCP agent immediately; backup is a correctness gap today. Chain-bound work — `spend`/`sign` capabilities, value rails, wallet-enforced session keys, on-chain identity — is a **separate package** with a one-way dependency on `tawn`, tracked outside this repo. Rationale: putting authority in the web3 layer would leave the open-source product as "just memory" and place the most valuable part outside the MIT promise, inverting the open-core boundary. | Stages 16–23 |
+| 2026-07-29 | **A domain is a scoped principal, not an autonomous agent.** Domain principals (Stage 18) get an identity, an authority envelope, a budget and an evidence segment — generalising the constraint wealth has carried since Stage 1, where it is read-only and never holds withdrawal credentials. What they do *not* get is initiative. Tawn's value is constraint, not autonomy; the moment a domain acts on its own behalf, the safety property that makes the whole system worth trusting is gone. | Stage 18 |
 | 2026-07-27 | **Attachments are parsed on attach, not on send, and travel by id** — the previous flow read every file as text (so a PDF became binary noise), inlined it into the message, and therefore re-sent the whole document on *every* later turn until the request grew large enough that chat stopped responding. Now upload → parse through the harness → store under an id; a turn references ids and the text enters context once, for that turn only. The wait moves to while the user is still typing, and send is blocked until parsing finishes. | Stage 10 |
 | 2026-07-27 | **Tesseract's OpenMP pool is pinned to one thread** — measured 2m23s unconstrained versus 4.7s pinned on the same 900x320 image, identical output. Set in code rather than documented as a tip: a user who hits the 30x slow path concludes OCR is broken and never finds the workaround. | Stage 10 |
 | 2026-07-27 | **Tool generation asks for delimited sections, not JSON** — a tool payload *contains Python source*, and embedding that in a JSON string needs every newline and quote escaped correctly, which is where smaller models fail. Fenced sections need no escaping. JSON is still accepted, with repair for unquoted keys, single quotes, trailing commas and Python singletons, plus brace-matching so trailing prose is not swallowed. One corrective retry, and the *first* error is reported rather than the last because a retry tends to drift further. | Stage 10 |

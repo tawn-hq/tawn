@@ -44,10 +44,13 @@ your machine. Open-source core, hosted and team versions to come.**
 
 ### Long form (≈ 250 words)
 **The problem.** Knowledge workers now use several AI tools every day, and each one
-is amnesiac and siloed. They don't remember your context, your knowledge, or what
-they (or another agent) just did. Worse, your life spans four disconnected
-domains — work, wealth, research, academic — so no tool can reason across them, and
-the few "second brains" that exist quietly go stale and start misleading you.
+remembers them — separately, on the vendor's servers, for as long as the subscription
+lasts. There is no shared substrate, and no vendor has an incentive to build one, since
+memory is precisely what makes their product sticky. So context is re-explained per
+tool, none of those stores index the repositories and documents the work actually lives
+in, and none records what another agent just changed. Worse, your life spans four
+disconnected domains — work, wealth, research, academic — so no tool can reason across
+them, and the few "second brains" that exist quietly go stale and start misleading you.
 
 **The product.** Tawn is a local-first personal digital twin: a single private
 memory core that every AI agent you already use reads from and writes back to,

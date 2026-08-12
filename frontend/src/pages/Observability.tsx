@@ -8,6 +8,14 @@ import {
   type ObserverSession,
 } from '../lib/api'
 
+/** Money arrives as a Decimal string. Rounded for display only — never
+ *  parsed back into a number for arithmetic, which is the drift the
+ *  Numeric(18,8) column exists to prevent. */
+function usd(v: string | number): string {
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toFixed(4) : String(v)
+}
+
 function Stat({ label, value, note, tone }: { label: string; value: string; note?: string; tone?: 'warn' | 'crit' }) {
   const colour = tone === 'crit' ? 'var(--tawn-crit)' : tone === 'warn' ? 'var(--tawn-warn)' : 'var(--tawn-text)'
   return (
@@ -37,7 +45,7 @@ function GroupTable({ title, rows, keyName }: { title: string; rows: SpendSummar
             {r.calls}
           </span>
           <span style={{ fontFamily: 'var(--tawn-font-mono)', color: 'var(--tawn-text-3)', fontVariantNumeric: 'tabular-nums', minWidth: 74, textAlign: 'right' }}>
-            ${r.cost_usd.toFixed(4)}
+            ${usd(r.cost_usd)}
           </span>
         </div>
       ))}
@@ -98,7 +106,7 @@ export default function Observability() {
   // so it is rendered as incomplete rather than as a bare figure.
   const costLabel = useMemo(() => {
     if (!spend) return '—'
-    return `$${spend.total_cost_usd.toFixed(4)}`
+    return `$${usd(spend.total_cost_usd)}`
   }, [spend])
 
   const stale = (status?.pending_bytes ?? 0) > 0

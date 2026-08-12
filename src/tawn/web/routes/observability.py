@@ -6,6 +6,7 @@ ways, so the event stream and the cost rollups are served together.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
@@ -22,6 +23,23 @@ router = APIRouter(tags=["observability"])
 
 def _log() -> AuditLog:
     return AuditLog(audit_path(tawn_home()))
+
+
+def _usd(x) -> str:
+    """Serialize money as a string, never a float.
+
+    `ModelCallRollup.cost_usd` is `Numeric(18, 8)` and its own column comment says
+    why: "money summed through binary floating point drifts, and a cost dashboard
+    that disagrees with its own source is worse than none." This route was
+    converting to float and then summing — precisely the drift the column exists
+    to prevent, on the same spend-reporting path where reconciliation once found
+    $12.21 of real spend recorded as $0.0021.
+
+    Trailing zeros are trimmed so 8 decimal places of storage do not become 8
+    decimal places of display.
+    """
+    d = Decimal(x or 0).quantize(Decimal("0.00000001"))
+    return f"{d:f}".rstrip("0").rstrip(".") or "0"
 
 
 @router.get("/events")
@@ -57,18 +75,20 @@ def get_spend(session: Session = Depends(get_session)):
         acc: dict = {}
         for r in rows:
             key = getattr(r, attr) or "unknown"
-            bucket = acc.setdefault(key, {"calls": 0, "cost_usd": 0.0, "unpriced": 0})
+            bucket = acc.setdefault(
+                key, {"calls": 0, "cost_usd": Decimal(0), "unpriced": 0}
+            )
             bucket["calls"] += r.calls
-            bucket["cost_usd"] += float(r.cost_usd or 0)
+            bucket["cost_usd"] += Decimal(r.cost_usd or 0)
             bucket["unpriced"] += r.unpriced_calls
         return [
-            {attr: k, **v}
+            {attr: k, **{**v, "cost_usd": _usd(v["cost_usd"])}}
             for k, v in sorted(acc.items(), key=lambda kv: -kv[1]["calls"])
         ]
 
     return {
         "total_calls": sum(r.calls for r in rows),
-        "total_cost_usd": float(sum((r.cost_usd or 0) for r in rows)),
+        "total_cost_usd": _usd(sum((Decimal(r.cost_usd or 0) for r in rows), Decimal(0))),
         # Reported alongside the total so the figure can state its own
         # incompleteness rather than quietly understating spend.
         "unpriced_calls": sum(r.unpriced_calls for r in rows),
@@ -78,7 +98,7 @@ def get_spend(session: Session = Depends(get_session)):
         "by_provider": _group("provider"),
         "by_caller": _group("caller"),
         "by_day": [
-            {"day": str(d), "calls": c, "cost_usd": float(cost or 0)}
+            {"day": str(d), "calls": c, "cost_usd": _usd(cost)}
             for d, c, cost in session.query(
                 ModelCallRollup.day,
                 func.sum(ModelCallRollup.calls),
